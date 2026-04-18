@@ -14,8 +14,8 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "openapi-template-db",
-			"database_id": "18d141d5-062d-46a0-a92a-bade3f8c4b00"
+			"database_name": "toolidx",
+			"database_id": "24ced8e9-9663-4575-98b5-3d6aac7acb3e"
 		}
 	],
 	"compatibility_flags": [
