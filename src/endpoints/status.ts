@@ -12,6 +12,7 @@ export class StatusEndpoint extends OpenAPIRoute {
 					"application/json": {
 						schema: z.object({
 							success: z.boolean(),
+							last_updated: z.string().datetime().describe("ISO 8601 UTC timestamp of last index update"),
 							result: z.object({
 								service: z.string(),
 								version: z.string(),
@@ -32,7 +33,7 @@ export class StatusEndpoint extends OpenAPIRoute {
 				service: "toolidx",
 				version: "0.1.0",
 				ready: false,
-				description: "Agent-first MCP server directory. Bootstrapping.",
+				description: "Agent-first MCP server directory. Evaluated, structured, queryable.",
 			},
 		};
 	}

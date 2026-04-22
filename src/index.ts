@@ -19,6 +19,36 @@ app.onError((err, c) => {
 	);
 });
 
+// Inject last_updated into every JSON response.
+// - API endpoints: top-level field for agent consumption
+// - OpenAPI spec (/openapi.json): injected into info.description for SwaggerUI heading
+app.use("*", async (c, next) => {
+	await next();
+
+	const contentType = c.res.headers.get("content-type") ?? "";
+	if (!contentType.includes("application/json")) return;
+
+	const meta = await c.env.DB.prepare(
+		"SELECT value FROM metadata WHERE key = 'last_updated'"
+	).first<{ value: string }>();
+	const lastUpdated = meta?.value ?? new Date().toISOString();
+
+	const body = await c.res.clone().json<Record<string, unknown>>();
+	const path = new URL(c.req.url).pathname;
+
+	if (path === "/openapi.json") {
+		const info = body.info as Record<string, unknown>;
+		info.description = `${info.description}  \n**Last updated:** ${lastUpdated}`;
+	} else {
+		body.last_updated = lastUpdated;
+	}
+
+	c.res = new Response(JSON.stringify(body), {
+		status: c.res.status,
+		headers: new Headers(c.res.headers),
+	});
+});
+
 const openapi = fromHono(app, {
 	docs_url: "/",
 	schema: {
