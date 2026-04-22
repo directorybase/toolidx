@@ -2,6 +2,10 @@ import { ApiException, fromHono } from "chanfana";
 import { Hono } from "hono";
 import { ContentfulStatusCode } from "hono/utils/http-status";
 import { StatusEndpoint } from "./endpoints/status";
+import { ServerCreate } from "./endpoints/servers/serverCreate";
+import { ServerList } from "./endpoints/servers/serverList";
+import { ServerGet } from "./endpoints/servers/serverGet";
+import { ServerQcUpdate } from "./endpoints/servers/serverQcUpdate";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -61,5 +65,9 @@ const openapi = fromHono(app, {
 });
 
 openapi.get("/v1/status", StatusEndpoint);
+openapi.get("/v1/servers", ServerList);
+openapi.post("/v1/servers", ServerCreate);
+openapi.get("/v1/servers/:id", ServerGet);
+openapi.patch("/v1/servers/:id/qc", ServerQcUpdate);
 
 export default app;
