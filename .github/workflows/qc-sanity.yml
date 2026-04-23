@@ -6,12 +6,13 @@ on:
 jobs:
   qc:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     env:
       TOOLIDX_API_KEY: ${{ secrets.TOOLIDX_API_KEY }}
       TOOLIDX_BASE: https://toolidx.dev
       CI_PLATFORM: github
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - uses: actions/checkout@v4

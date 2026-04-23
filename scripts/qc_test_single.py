@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import select
+import signal
 import subprocess
 import sys
 import tempfile
@@ -175,17 +176,22 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
     }
 
     cmd_parts = install_cmd.split()
-    print(f"\n[QC] Starting: {install_cmd}")
+    print(f"\n[QC] Starting: {install_cmd}", flush=True)
 
     t_start = time.time()
+    stderr_file = tempfile.NamedTemporaryFile(mode="wb", delete=False)
     try:
         proc = subprocess.Popen(
             cmd_parts,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=stderr_file,
+            start_new_session=True,
         )
+        stderr_file.close()
     except FileNotFoundError as e:
+        stderr_file.close()
+        os.unlink(stderr_file.name)
         result["qc_error"] = f"Command not found: {e}"
         return result
 
@@ -195,8 +201,12 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
         init_resp = recv(proc, expected_id=1, timeout=120)
 
         if init_resp is None:
-            # Process died before responding
-            stderr = proc.stderr.read().decode(errors="replace")
+            # Process died before responding — read stderr from tempfile
+            try:
+                with open(stderr_file.name, "rb") as f:
+                    stderr = f.read().decode(errors="replace")
+            except Exception:
+                stderr = ""
             result["requires_env_vars"] = stderr_suggests_env_vars(stderr)
             result["external_deps_detected"] = detect_external_deps(stderr)
             result["setup_complexity"] = compute_setup_complexity(result["requires_env_vars"], result["external_deps_detected"])
@@ -269,25 +279,43 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
                 result["prompts_list"] = pmt_resp.get("result", {}).get("prompts", [])
                 print(f"[QC] {len(result['prompts_list'])} prompts found")
 
-        stderr = proc.stderr.read().decode(errors="replace") if proc.poll() is not None else ""
-        result["external_deps_detected"] = detect_external_deps(stderr)
+        result["external_deps_detected"] = []
         result["setup_complexity"] = compute_setup_complexity(result["requires_env_vars"], result["external_deps_detected"])
         result["qc_status"] = "passed"
 
     except TimeoutError as e:
         result["qc_error"] = str(e)
         result["qc_status"] = "error"
-        print(f"[QC] TIMEOUT: {e}")
+        print(f"[QC] TIMEOUT: {e}", flush=True)
     except Exception as e:
         result["qc_error"] = str(e)
         result["qc_status"] = "error"
-        print(f"[QC] ERROR: {e}")
+        print(f"[QC] ERROR: {e}", flush=True)
     finally:
         try:
-            proc.terminate()
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except Exception:
+            pass
+        try:
             proc.wait(timeout=5)
         except Exception:
-            proc.kill()
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        try:
+            with open(stderr_file.name, "rb") as f:
+                stderr = f.read().decode(errors="replace")
+        except Exception:
+            stderr = ""
+        finally:
+            try:
+                os.unlink(stderr_file.name)
+            except Exception:
+                pass
+        if result["qc_status"] in ("error", "failed") or not result["external_deps_detected"]:
+            result["external_deps_detected"] = detect_external_deps(stderr)
+            result["setup_complexity"] = compute_setup_complexity(result["requires_env_vars"], result["external_deps_detected"])
 
     return result
 

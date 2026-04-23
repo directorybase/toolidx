@@ -4,12 +4,13 @@ stages:
 qc-sanity:
   stage: qc
   image: python:3.11-slim
-  timeout: 30 minutes
+  timeout: 60 minutes
   when: manual
 
   variables:
     TOOLIDX_BASE: "https://toolidx.dev"
     CI_PLATFORM: "gitlab"
+    PYTHONUNBUFFERED: "1"
 
   before_script:
     - apt-get update -qq && apt-get install -y -qq curl nodejs npm

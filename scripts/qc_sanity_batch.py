@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 sys.path.insert(0, os.path.dirname(__file__))
 from qc_test_single import run_qc
@@ -133,7 +134,33 @@ def main():
             error += 1
             continue
 
-        result = run_qc(install_cmd, server_id, verbose=False)
+        PER_SERVER_TIMEOUT = 180  # 3 minutes max per server
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(run_qc, install_cmd, server_id, False)
+            try:
+                result = future.result(timeout=PER_SERVER_TIMEOUT)
+            except FuturesTimeout:
+                result = {
+                    "server_id": server_id,
+                    "install_cmd": install_cmd,
+                    "qc_status": "error",
+                    "qc_error": f"Per-server timeout after {PER_SERVER_TIMEOUT}s",
+                    "tool_count": 0,
+                    "tool_schemas": [],
+                    "server_version": None,
+                    "protocol_version": None,
+                    "capabilities": None,
+                    "server_instructions": None,
+                    "resources_list": None,
+                    "prompts_list": None,
+                    "has_destructive_tools": False,
+                    "all_tools_readonly": False,
+                    "install_duration_ms": None,
+                    "requires_env_vars": False,
+                    "description_quality_score": None,
+                    "external_deps_detected": [],
+                    "setup_complexity": "low",
+                }
         ok = patch_qc_result(result, args.platform)
 
         status = result["qc_status"]
