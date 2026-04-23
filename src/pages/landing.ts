@@ -104,7 +104,8 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
       margin-bottom: 20px;
     }
 
-    .wordmark span { color: var(--green); }
+    .wordmark .g { color: var(--green-lt); }
+    .wordmark { color: #ffffff; }
 
     .tagline {
       font-size: clamp(18px, 3vw, 26px);
@@ -286,7 +287,7 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
 </nav>
 
 <main>
-  <div class="wordmark">toolidx<span>.dev</span></div>
+  <div class="wordmark"><span class="g">tool</span>idx<span class="g">.dev</span></div>
   <div class="tagline">Verified tools. Structured trust.</div>
   <p class="subtitle">Machine-readable verification and status for MCP servers and AI tools.</p>
 
