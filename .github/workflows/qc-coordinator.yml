@@ -1,11 +1,23 @@
-name: Nightly QC Run
+name: QC Coordinator
+
+# Runs a batch of servers, then re-triggers itself if the queue still has candidates.
+# Creates a self-chaining pipeline that runs at full platform capacity until empty.
+# Kickstarted nightly by cron; also triggered by npm poll and server submissions.
 
 on:
   schedule:
-    - cron: "0 3 * * *"   # 3am UTC every night (after npm poll at 2am)
-  workflow_dispatch:       # manual trigger for testing
+    - cron: "0 3 * * *"   # daily kickstart — ensures the chain restarts even if it stalled
+  workflow_dispatch:       # manual trigger, called by self-chain and external triggers
+
+permissions:
+  actions: write           # required for self-dispatch
+
+concurrency:
+  group: qc-coordinator
+  cancel-in-progress: false  # queue a new run rather than cancel the in-progress batch
 
 jobs:
+  # ── 1. Select the next batch ──────────────────────────────────────────────
   generate:
     name: Select candidates
     runs-on: ubuntu-latest
@@ -28,23 +40,25 @@ jobs:
       - name: Collect candidate IDs
         id: ids
         run: |
-          # Suppress [feed] log lines — only the final JSON goes to the output var
+          # qc_feed.py --list-only prints [feed] logs to stderr, JSON to stdout
           MATRIX=$(python3 scripts/qc_feed.py --list-only --batch-size 200 2>&1 \
-            | grep --line-buffered -v '^\[feed\]' | tail -1)
-          COUNT=$(echo "$MATRIX" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-          echo "Selected $COUNT servers for tonight's QC run"
+            | grep -v '^\[feed\]' | tail -1)
+          if [ -z "$MATRIX" ] || [ "$MATRIX" = "[]" ]; then
+            echo "matrix=[]" >> "$GITHUB_OUTPUT"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "Queue empty — coordinator will idle until next cron."
+          else
+            COUNT=$(echo "$MATRIX" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
+            echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+            echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+            echo "Selected $COUNT servers for this batch."
+          fi
 
-      - name: Write candidate summary
-        run: |
-          echo "## Nightly QC — $(date -u '+%Y-%m-%d')" >> $GITHUB_STEP_SUMMARY
-          echo "**Candidates selected:** ${{ steps.ids.outputs.count }}" >> $GITHUB_STEP_SUMMARY
-
+  # ── 2. Run QC jobs in parallel ────────────────────────────────────────────
   qc:
     name: QC — ${{ matrix.server_id }}
     needs: generate
-    if: ${{ needs.generate.outputs.count != '0' }}
+    if: needs.generate.outputs.count != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -87,29 +101,30 @@ jobs:
             --server-id "${{ matrix.server_id }}" \
             --patch
 
-  report:
-    name: Nightly Summary
+  # ── 3. Summarise and re-trigger if more work remains ─────────────────────
+  chain:
+    name: Report + continue
     needs: [generate, qc]
-    if: always()
+    if: always() && needs.generate.outputs.count != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     env:
       TOOLIDX_BASE: https://toolidx.dev
+      PYTHONUNBUFFERED: "1"
 
     steps:
-      - name: Fetch and print results
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Write batch summary
         run: |
           MATRIX='${{ needs.generate.outputs.matrix }}'
-          COUNT=${{ needs.generate.outputs.count }}
-
-          if [ "$COUNT" = "0" ]; then
-            echo "Nothing to test tonight." >> $GITHUB_STEP_SUMMARY
-            exit 0
-          fi
-
           PASSED=0; FAILED=0; ERROR=0; OTHER=0
-          TABLE="| Server | QC Status | Tools |\n|--------|-----------|-------|\n"
+          TABLE="| Server | Status | Tools |\n|--------|--------|-------|\n"
 
           for sid in $(echo "$MATRIX" | python3 -c "import sys,json; [print(x) for x in json.load(sys.stdin)]"); do
             DATA=$(curl -s --max-time 10 "$TOOLIDX_BASE/v1/servers/$sid")
@@ -125,7 +140,7 @@ jobs:
           done
 
           {
-            echo "## Nightly QC Results — $(date -u '+%Y-%m-%d')"
+            echo "## QC Batch — $(date -u '+%Y-%m-%d %H:%M UTC')"
             echo ""
             echo "| Passed | Failed | Error | Other |"
             echo "|--------|--------|-------|-------|"
@@ -133,3 +148,21 @@ jobs:
             echo ""
             printf "$TABLE"
           } >> $GITHUB_STEP_SUMMARY
+
+      - name: Check queue and continue if not empty
+        run: |
+          # Count remaining candidates across all priority tiers
+          PENDING=$(curl -s "$TOOLIDX_BASE/v1/servers?status=active&qc_status=pending&limit=1" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('total',0))")
+          echo "Remaining pending: $PENDING"
+
+          if [ "$PENDING" -gt 0 ]; then
+            echo "Queue not empty — triggering next batch."
+            gh workflow run qc-coordinator.yml \
+              --repo ${{ github.repository }} \
+              --ref ${{ github.ref_name }}
+          else
+            echo "Queue empty — coordinator going idle. Next kickstart: 3am UTC."
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
