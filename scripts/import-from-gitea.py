@@ -13,6 +13,7 @@ Options:
 import argparse
 import base64
 import json
+import os
 import re
 import subprocess
 import sys
@@ -21,13 +22,13 @@ import urllib.request
 import urllib.error
 from typing import Optional
 
-GITEA_TOKEN = "fa77ce8bdee8c61944734e35202cffddb7cf6919"
-GITEA_BASE = "http://192.168.7.70:30008/api/v1"
+GITEA_TOKEN = os.environ.get("GITEA_TOKEN", "")
+GITEA_BASE = os.environ.get("GITEA_BASE", "http://192.168.7.70:30008/api/v1")
 GITEA_REPO = "directorybase/agenticwatch-site"
 MCP_SERVERS_PATH = "data/mcp-servers.json"
 
-TOOLIDX_BASE = "https://toolidx.gregorydcollins.workers.dev"
-TOOLIDX_API_KEY = "2778e5e9c0d621451af9f92e7b0b8dfc7ac7f8e87e9c3a218ef527d652de7742"
+TOOLIDX_BASE = os.environ.get("TOOLIDX_BASE", "https://toolidx.dev")
+TOOLIDX_API_KEY = os.environ.get("TOOLIDX_API_KEY", "")
 
 
 def derive_server_id(url: str) -> Optional[str]:
@@ -94,6 +95,11 @@ def post_server(entry: dict, dry_run: bool) -> tuple[bool, str]:
 
 
 def main():
+    if not GITEA_TOKEN:
+        sys.exit("Error: GITEA_TOKEN env var required")
+    if not TOOLIDX_API_KEY:
+        sys.exit("Error: TOOLIDX_API_KEY env var required")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
