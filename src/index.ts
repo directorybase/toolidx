@@ -7,6 +7,8 @@ import { ServerList } from "./endpoints/servers/serverList";
 import { ServerGet } from "./endpoints/servers/serverGet";
 import { ServerQcUpdate } from "./endpoints/servers/serverQcUpdate";
 import { ServerUpdate } from "./endpoints/servers/serverUpdate";
+import { ServerTools } from "./endpoints/servers/serverTools";
+import { ToolsSearch } from "./endpoints/tools/toolsSearch";
 import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
 
@@ -138,5 +140,7 @@ openapi.post("/v1/servers", ServerCreate);
 openapi.get("/v1/servers/:id", ServerGet);
 openapi.patch("/v1/servers/:id", ServerUpdate);
 openapi.patch("/v1/servers/:id/qc", ServerQcUpdate);
+openapi.get("/v1/servers/:id/tools", ServerTools);
+openapi.get("/v1/tools", ToolsSearch);
 
 export default app;

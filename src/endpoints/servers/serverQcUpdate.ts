@@ -35,6 +35,7 @@ export class ServerQcUpdate extends OpenAPIRoute {
 							hangs_on_start: z.boolean().optional(),
 							tools_list_duration_ms: z.number().int().optional(),
 							qc_platform: z.enum(["github", "gitlab", "local"]).optional(),
+							schema_weight_chars: z.number().int().optional(),
 						}),
 					},
 				},
@@ -70,7 +71,7 @@ export class ServerQcUpdate extends OpenAPIRoute {
 			has_destructive_tools, all_tools_readonly,
 			install_duration_ms, requires_env_vars,
 			description_quality_score, external_deps_detected, setup_complexity,
-			hangs_on_start, tools_list_duration_ms, qc_platform,
+			hangs_on_start, tools_list_duration_ms, qc_platform, schema_weight_chars,
 		} = data.body;
 
 		const now = new Date().toISOString();
@@ -86,6 +87,7 @@ export class ServerQcUpdate extends OpenAPIRoute {
 			    install_duration_ms = ?, requires_env_vars = ?,
 			    description_quality_score = ?, external_deps_detected = ?, setup_complexity = ?,
 			    hangs_on_start = ?, tools_list_duration_ms = ?, qc_platform = ?,
+			    schema_weight_chars = ?,
 			    updated_at = ?
 			WHERE id = ?
 		`).bind(
@@ -110,6 +112,7 @@ export class ServerQcUpdate extends OpenAPIRoute {
 			hangs_on_start ? 1 : 0,
 			tools_list_duration_ms ?? null,
 			qc_platform ?? null,
+			schema_weight_chars ?? null,
 			now,
 			id,
 		).run();

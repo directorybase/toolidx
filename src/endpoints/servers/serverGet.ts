@@ -10,6 +10,9 @@ export class ServerGet extends OpenAPIRoute {
 			params: z.object({
 				id: z.string(),
 			}),
+			query: z.object({
+				slim: z.coerce.boolean().default(false).optional(),
+			}),
 		},
 		responses: {
 			"200": {
@@ -42,7 +45,12 @@ export class ServerGet extends OpenAPIRoute {
 								has_destructive_tools: z.boolean().nullable(),
 								all_tools_readonly: z.boolean().nullable(),
 								install_duration_ms: z.number().nullable(),
+								tools_list_duration_ms: z.number().nullable(),
 								requires_env_vars: z.boolean().nullable(),
+								hangs_on_start: z.boolean().nullable(),
+								is_proxy: z.boolean().nullable(),
+								schema_weight_chars: z.number().nullable(),
+								qc_platform: z.string().nullable(),
 								sanity_score: z.number().nullable(),
 								quality_score: z.number().nullable(),
 								status: z.string(),
@@ -61,6 +69,7 @@ export class ServerGet extends OpenAPIRoute {
 	async handle(c: AppContext) {
 		const data = await this.getValidatedData<typeof this.schema>();
 		const { id } = data.params;
+		const slim = data.query?.slim ?? false;
 
 		const row = await c.env.DB.prepare(
 			"SELECT * FROM servers WHERE id = ?"
@@ -73,16 +82,20 @@ export class ServerGet extends OpenAPIRoute {
 			);
 		}
 
-		return {
-			success: true,
-			result: {
-				...row,
-				tags: row.tags ? JSON.parse(row.tags as string) : null,
-				tool_schemas: row.tool_schemas ? JSON.parse(row.tool_schemas as string) : null,
-				capabilities: row.capabilities ? JSON.parse(row.capabilities as string) : null,
-				resources_list: row.resources_list ? JSON.parse(row.resources_list as string) : null,
-				prompts_list: row.prompts_list ? JSON.parse(row.prompts_list as string) : null,
-			},
+		const result: Record<string, unknown> = {
+			...row,
+			tags: row.tags ? JSON.parse(row.tags as string) : null,
+			tool_schemas: slim ? undefined : (row.tool_schemas ? JSON.parse(row.tool_schemas as string) : null),
+			capabilities: row.capabilities ? JSON.parse(row.capabilities as string) : null,
+			resources_list: slim ? undefined : (row.resources_list ? JSON.parse(row.resources_list as string) : null),
+			prompts_list: slim ? undefined : (row.prompts_list ? JSON.parse(row.prompts_list as string) : null),
+			has_destructive_tools: row.has_destructive_tools === 1,
+			all_tools_readonly: row.all_tools_readonly === 1,
+			requires_env_vars: row.requires_env_vars === 1,
+			hangs_on_start: row.hangs_on_start === 1,
+			is_proxy: row.is_proxy === 1,
 		};
+
+		return { success: true, result };
 	}
 }

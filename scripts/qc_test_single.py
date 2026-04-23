@@ -176,6 +176,7 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
         "hangs_on_start": False,
         "tools_list_duration_ms": None,
         "qc_platform": os.environ.get("CI_PLATFORM", "local"),
+        "schema_weight_chars": None,
     }
 
     cmd_parts = install_cmd.split()
@@ -252,6 +253,7 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
             result["has_destructive_tools"] = has_dest
             result["all_tools_readonly"] = all_ro
             result["description_quality_score"] = score_description_quality(tools)
+            result["schema_weight_chars"] = sum(len(json.dumps(t)) for t in tools)
 
             print(f"\n[QC] {len(tools)} tools found:")
             for t in tools:
@@ -348,6 +350,7 @@ def patch_toolidx(result: dict, base_url: str, api_key: str) -> bool:
         "hangs_on_start": result.get("hangs_on_start", False),
         "tools_list_duration_ms": result.get("tools_list_duration_ms"),
         "qc_platform": result.get("qc_platform", "local"),
+        "schema_weight_chars": result.get("schema_weight_chars"),
     }
     if result["qc_error"]:
         payload["qc_error"] = result["qc_error"]
