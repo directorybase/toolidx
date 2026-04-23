@@ -7,6 +7,7 @@ import { ServerList } from "./endpoints/servers/serverList";
 import { ServerGet } from "./endpoints/servers/serverGet";
 import { ServerQcUpdate } from "./endpoints/servers/serverQcUpdate";
 import { renderLanding } from "./pages/landing";
+import { renderLlmsTxt } from "./pages/llmstxt";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -70,6 +71,41 @@ app.get("/", async (c) => {
 	return new Response(renderLanding(countRow?.count ?? 0, metaRow?.value ?? ""), {
 		headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
 	});
+});
+
+app.get("/llms.txt", async (c) => {
+	const [countRow, metaRow] = await Promise.all([
+		c.env.DB.prepare("SELECT COUNT(*) as count FROM servers WHERE status = 'active'").first<{ count: number }>(),
+		c.env.DB.prepare("SELECT value FROM metadata WHERE key = 'last_updated'").first<{ value: string }>(),
+	]);
+	return new Response(renderLlmsTxt(countRow?.count ?? 0, metaRow?.value ?? ""), {
+		headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+	});
+});
+
+app.get("/.well-known/mcp.json", async (c) => {
+	const [countRow, metaRow] = await Promise.all([
+		c.env.DB.prepare("SELECT COUNT(*) as count FROM servers WHERE status = 'active'").first<{ count: number }>(),
+		c.env.DB.prepare("SELECT value FROM metadata WHERE key = 'last_updated'").first<{ value: string }>(),
+	]);
+	const payload = {
+		name: "toolidx",
+		description: "Independent MCP server directory and verification service",
+		url: "https://toolidx.dev",
+		version: "0.1.0",
+		api: {
+			rest: "https://toolidx.dev/v1",
+			openapi: "https://toolidx.dev/openapi.json",
+			docs: "https://toolidx.dev/docs",
+		},
+		capabilities: ["directory", "verification", "search", "evaluation"],
+		stats: {
+			servers_indexed: countRow?.count ?? 0,
+			last_updated: metaRow?.value ?? null,
+		},
+		contact: { website: "https://agenticwatch.dev" },
+	};
+	return c.json(payload);
 });
 
 app.get("/favicon.svg", (c) =>
