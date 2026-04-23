@@ -173,6 +173,9 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
         "description_quality_score": None,
         "external_deps_detected": [],
         "setup_complexity": "low",
+        "hangs_on_start": False,
+        "tools_list_duration_ms": None,
+        "qc_platform": os.environ.get("CI_PLATFORM", "local"),
     }
 
     cmd_parts = install_cmd.split()
@@ -233,8 +236,10 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
         send(proc, INITIALIZED_NOTIF)
 
         # ── 2. Tools list ────────────────────────────────────────────────────
+        t_tools_start = time.time()
         send(proc, msg("tools/list", 2, {}))
         tools_resp = recv(proc, expected_id=2, timeout=15)
+        result["tools_list_duration_ms"] = int((time.time() - t_tools_start) * 1000)
 
         if verbose:
             print(f"\n[QC] tools/list: {json.dumps(tools_resp, indent=2)}")
@@ -286,6 +291,8 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
     except TimeoutError as e:
         result["qc_error"] = str(e)
         result["qc_status"] = "error"
+        # hangs_on_start = timed out before initialize responded (install_duration_ms never set)
+        result["hangs_on_start"] = result["install_duration_ms"] is None
         print(f"[QC] TIMEOUT: {e}", flush=True)
     except Exception as e:
         result["qc_error"] = str(e)
@@ -338,6 +345,9 @@ def patch_toolidx(result: dict, base_url: str, api_key: str) -> bool:
         "description_quality_score": result["description_quality_score"],
         "external_deps_detected": result["external_deps_detected"],
         "setup_complexity": result["setup_complexity"],
+        "hangs_on_start": result.get("hangs_on_start", False),
+        "tools_list_duration_ms": result.get("tools_list_duration_ms"),
+        "qc_platform": result.get("qc_platform", "local"),
     }
     if result["qc_error"]:
         payload["qc_error"] = result["qc_error"]

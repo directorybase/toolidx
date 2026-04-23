@@ -32,6 +32,9 @@ export class ServerQcUpdate extends OpenAPIRoute {
 							description_quality_score: z.number().min(0).max(10).optional(),
 							external_deps_detected: z.array(z.string()).optional(),
 							setup_complexity: z.enum(["low", "medium", "high"]).optional(),
+							hangs_on_start: z.boolean().optional(),
+							tools_list_duration_ms: z.number().int().optional(),
+							qc_platform: z.enum(["github", "gitlab", "local"]).optional(),
 						}),
 					},
 				},
@@ -67,6 +70,7 @@ export class ServerQcUpdate extends OpenAPIRoute {
 			has_destructive_tools, all_tools_readonly,
 			install_duration_ms, requires_env_vars,
 			description_quality_score, external_deps_detected, setup_complexity,
+			hangs_on_start, tools_list_duration_ms, qc_platform,
 		} = data.body;
 
 		const now = new Date().toISOString();
@@ -81,6 +85,7 @@ export class ServerQcUpdate extends OpenAPIRoute {
 			    has_destructive_tools = ?, all_tools_readonly = ?,
 			    install_duration_ms = ?, requires_env_vars = ?,
 			    description_quality_score = ?, external_deps_detected = ?, setup_complexity = ?,
+			    hangs_on_start = ?, tools_list_duration_ms = ?, qc_platform = ?,
 			    updated_at = ?
 			WHERE id = ?
 		`).bind(
@@ -102,6 +107,9 @@ export class ServerQcUpdate extends OpenAPIRoute {
 			description_quality_score ?? null,
 			external_deps_detected ? JSON.stringify(external_deps_detected) : null,
 			setup_complexity ?? null,
+			hangs_on_start ? 1 : 0,
+			tools_list_duration_ms ?? null,
+			qc_platform ?? null,
 			now,
 			id,
 		).run();

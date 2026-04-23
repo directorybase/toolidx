@@ -96,6 +96,9 @@ def patch_qc_result(result: dict, platform: str) -> bool:
         "description_quality_score": result.get("description_quality_score"),
         "external_deps_detected": result.get("external_deps_detected", []),
         "setup_complexity": result.get("setup_complexity", "low"),
+        "hangs_on_start": result.get("hangs_on_start", False),
+        "tools_list_duration_ms": result.get("tools_list_duration_ms"),
+        "qc_platform": result.get("qc_platform", "local"),
     }
     if result.get("qc_error"):
         payload["qc_error"] = result["qc_error"]
