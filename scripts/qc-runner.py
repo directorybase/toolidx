@@ -117,8 +117,6 @@ def patch_qc_result(result: dict) -> bool:
         return False
     finally:
         os.unlink(tmp_path)
-    except Exception:
-        return False
 
 
 def run_one(server: dict) -> dict:
