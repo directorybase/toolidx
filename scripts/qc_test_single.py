@@ -19,6 +19,7 @@ Environment:
 import argparse
 import json
 import os
+import select
 import subprocess
 import sys
 import tempfile
@@ -61,9 +62,14 @@ def recv(proc, expected_id: int = None, timeout: float = 15.0) -> dict | None:
     while time.time() < deadline:
         if proc.poll() is not None:
             return None  # process died
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 1.0))
+        if not ready:
+            continue
         line = proc.stdout.readline()
         if not line:
-            time.sleep(0.05)
             continue
         line = line.strip()
         if not line:
@@ -186,7 +192,7 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
     try:
         # ── 1. Initialize ────────────────────────────────────────────────────
         send(proc, INIT_MSG)
-        init_resp = recv(proc, expected_id=1, timeout=30)
+        init_resp = recv(proc, expected_id=1, timeout=120)
 
         if init_resp is None:
             # Process died before responding
