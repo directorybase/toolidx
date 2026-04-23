@@ -25,6 +25,7 @@ export class ServerList extends OpenAPIRoute {
 								id: z.string(),
 								name: z.string(),
 								description: z.string(),
+								repository_url: z.string().nullable(),
 								package_type: z.string().nullable(),
 								install_command: z.string().nullable(),
 								qc_status: z.string(),
@@ -54,7 +55,7 @@ export class ServerList extends OpenAPIRoute {
 
 		const [rows, countRow] = await Promise.all([
 			c.env.DB.prepare(
-				`SELECT id, name, description, package_type, install_command,
+				`SELECT id, name, description, repository_url, package_type, install_command,
 				        qc_status, quality_score, status, updated_at
 				 FROM servers WHERE ${where}
 				 ORDER BY quality_score DESC NULLS LAST, updated_at DESC
