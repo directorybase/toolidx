@@ -1,34 +1,80 @@
 stages:
   - qc
+  - report
 
-qc-sanity:
+qc-server:
   stage: qc
   image: python:3.11-slim
-  timeout: 60 minutes
+  timeout: 10 minutes
   when: manual
 
   variables:
     TOOLIDX_BASE: "https://toolidx.dev"
-    CI_PLATFORM: "gitlab"
     PYTHONUNBUFFERED: "1"
 
+  parallel:
+    matrix:
+      - SERVER_ID:
+          - github-com-1mcp-app-agent
+          - github-com-preflight-dev-preflight
+          - github-com-n24q02m-better-email-mcp
+          - github-com-furey-mongodb-lens
+          - github-com-gannonh-firebase-mcp
+          - github-com-gigamori-mcp-run-sql-connectorx
+          - github-com-greptimeteam-greptimedb-mcp-server
+          - github-com-henilcalagiya-google-sheets-mcp
+          - github-com-hydrolix-mcp-hydrolix
+          - github-com-idoru-influxdb-mcp-server
+
   before_script:
-    - apt-get update -qq && apt-get install -y -qq curl nodejs npm
+    - apt-get update -qq && apt-get install -y -qq curl nodejs npm jq
     - curl -LsSf https://astral.sh/uv/install.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
 
   script:
-    - >-
-      python3 scripts/qc_sanity_batch.py
-      --platform gitlab
-      --servers
-      github-com-1mcp-app-agent
-      github-com-preflight-dev-preflight
-      github-com-n24q02m-better-email-mcp
-      github-com-furey-mongodb-lens
-      github-com-gannonh-firebase-mcp
-      github-com-gigamori-mcp-run-sql-connectorx
-      github-com-greptimeteam-greptimedb-mcp-server
-      github-com-henilcalagiya-google-sheets-mcp
-      github-com-hydrolix-mcp-hydrolix
-      github-com-idoru-influxdb-mcp-server
+    - |
+      DATA=$(curl -s --max-time 15 "$TOOLIDX_BASE/v1/servers/$SERVER_ID")
+      INSTALL_CMD=$(echo "$DATA" | jq -r '.result.install_command // .install_command // empty')
+      if [ -z "$INSTALL_CMD" ]; then
+        echo "No install_command for $SERVER_ID"
+        exit 1
+      fi
+      python3 scripts/qc_test_single.py \
+        --install-cmd "$INSTALL_CMD" \
+        --server-id "$SERVER_ID" \
+        --patch
+
+report:
+  stage: report
+  image: python:3.11-slim
+  when: manual
+  needs: ["qc-server"]
+
+  variables:
+    TOOLIDX_BASE: "https://toolidx.dev"
+
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl jq
+
+  script:
+    - |
+      SERVERS="
+        github-com-1mcp-app-agent
+        github-com-preflight-dev-preflight
+        github-com-n24q02m-better-email-mcp
+        github-com-furey-mongodb-lens
+        github-com-gannonh-firebase-mcp
+        github-com-gigamori-mcp-run-sql-connectorx
+        github-com-greptimeteam-greptimedb-mcp-server
+        github-com-henilcalagiya-google-sheets-mcp
+        github-com-hydrolix-mcp-hydrolix
+        github-com-idoru-influxdb-mcp-server
+      "
+      printf "\n%-50s %-8s %5s\n" "SERVER" "STATUS" "TOOLS"
+      printf '%0.s-' $(seq 1 67) && echo
+      for sid in $SERVERS; do
+        DATA=$(curl -s --max-time 10 "$TOOLIDX_BASE/v1/servers/$sid")
+        STATUS=$(echo "$DATA" | jq -r '.result.qc_status // "unknown"')
+        TOOLS=$(echo "$DATA" | jq -r '.result.tool_count // 0')
+        printf "%-50s %-8s %5s\n" "$sid" "$STATUS" "$TOOLS"
+      done
