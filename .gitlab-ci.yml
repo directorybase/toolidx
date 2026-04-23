@@ -1,0 +1,32 @@
+stages:
+  - qc
+
+qc-sanity:
+  stage: qc
+  image: python:3.11-slim
+  timeout: 30 minutes
+  when: manual
+
+  variables:
+    TOOLIDX_BASE: "https://toolidx.dev"
+    CI_PLATFORM: "gitlab"
+
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl nodejs npm
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+
+  script:
+    - python3 scripts/qc_sanity_batch.py
+        --platform gitlab
+        --servers
+          github-com-1mcp-app-agent
+          github-com-preflight-dev-preflight
+          github-com-n24q02m-better-email-mcp
+          github-com-furey-mongodb-lens
+          github-com-gannonh-firebase-mcp
+          github-com-gigamori-mcp-run-sql-connectorx
+          github-com-greptimeteam-greptimedb-mcp-server
+          github-com-henilcalagiya-google-sheets-mcp
+          github-com-hydrolix-mcp-hydrolix
+          github-com-idoru-influxdb-mcp-server

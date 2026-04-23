@@ -1,0 +1,40 @@
+name: QC Sanity Run (10 servers)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  qc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      TOOLIDX_API_KEY: ${{ secrets.TOOLIDX_API_KEY }}
+      TOOLIDX_BASE: https://toolidx.dev
+      CI_PLATFORM: github
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv (for uvx commands)
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh && echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Run QC on 10 fixed servers
+        run: |
+          python3 scripts/qc_sanity_batch.py \
+            --platform github \
+            --servers \
+              github-com-1mcp-app-agent \
+              github-com-preflight-dev-preflight \
+              github-com-n24q02m-better-email-mcp \
+              github-com-furey-mongodb-lens \
+              github-com-gannonh-firebase-mcp \
+              github-com-gigamori-mcp-run-sql-connectorx \
+              github-com-greptimeteam-greptimedb-mcp-server \
+              github-com-henilcalagiya-google-sheets-mcp \
+              github-com-hydrolix-mcp-hydrolix \
+              github-com-idoru-influxdb-mcp-server
