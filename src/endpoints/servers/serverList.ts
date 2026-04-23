@@ -31,6 +31,8 @@ export class ServerList extends OpenAPIRoute {
 								description: z.string(),
 								repository_url: z.string().nullable(),
 								package_type: z.string().nullable(),
+								package_name: z.string().nullable(),
+								npm_version: z.string().nullable(),
 								install_command: z.string().nullable(),
 								qc_status: z.string(),
 								tool_count: z.number().nullable(),
@@ -78,8 +80,8 @@ export class ServerList extends OpenAPIRoute {
 
 		const [rows, countRow] = await Promise.all([
 			c.env.DB.prepare(
-				`SELECT id, name, description, repository_url, package_type, install_command,
-				        qc_status, tool_count, schema_weight_chars,
+				`SELECT id, name, description, repository_url, package_type, package_name, npm_version,
+				        install_command, qc_status, tool_count, schema_weight_chars,
 				        install_duration_ms, tools_list_duration_ms,
 				        requires_env_vars, hangs_on_start, is_proxy,
 				        setup_complexity, qc_platform,

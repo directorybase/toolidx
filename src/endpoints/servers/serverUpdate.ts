@@ -17,10 +17,12 @@ export class ServerUpdate extends OpenAPIRoute {
 							install_command: z.string().optional(),
 							package_type: z.enum(["npm", "uvx", "pip"]).optional(),
 							package_name: z.string().optional(),
+							npm_version: z.string().optional(),
 							min_node_version: z.string().optional(),
 							homepage_url: z.string().optional(),
 							tags: z.array(z.string()).optional(),
 							status: z.enum(["active", "pending", "rejected"]).optional(),
+							qc_status: z.literal("pending").optional(),
 						}),
 					},
 				},
@@ -57,10 +59,12 @@ export class ServerUpdate extends OpenAPIRoute {
 		if (body.install_command !== undefined) { sets.push("install_command = ?"); params.push(body.install_command); }
 		if (body.package_type !== undefined) { sets.push("package_type = ?"); params.push(body.package_type); }
 		if (body.package_name !== undefined) { sets.push("package_name = ?"); params.push(body.package_name); }
+		if (body.npm_version !== undefined) { sets.push("npm_version = ?"); params.push(body.npm_version); }
 		if (body.min_node_version !== undefined) { sets.push("min_node_version = ?"); params.push(body.min_node_version); }
 		if (body.homepage_url !== undefined) { sets.push("homepage_url = ?"); params.push(body.homepage_url); }
 		if (body.tags !== undefined) { sets.push("tags = ?"); params.push(JSON.stringify(body.tags)); }
 		if (body.status !== undefined) { sets.push("status = ?"); params.push(body.status); }
+		if (body.qc_status !== undefined) { sets.push("qc_status = ?"); params.push(body.qc_status); }
 
 		if (sets.length === 0) {
 			return c.json({ success: false, errors: [{ code: 400, message: "No fields to update" }] }, 400);
