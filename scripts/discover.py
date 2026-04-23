@@ -75,8 +75,21 @@ def fetch_json(url: str, headers: dict = None, timeout: int = 10) -> Optional[di
 def fetch_github_file(owner: str, repo: str, path: str) -> Optional[str]:
     """Fetch a file from GitHub and return its decoded text content."""
     url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
-    data = fetch_json(url, headers=github_headers())
+    headers = github_headers()
+    header_args = []
+    for k, v in headers.items():
+        header_args += ["-H", f"{k}: {v}"]
+    proc = subprocess.run(
+        ["curl", "-s", "--max-time", "10", url] + header_args,
+        capture_output=True, text=True, timeout=15,
+    )
     time.sleep(RATE_LIMIT_SLEEP)
+    if not proc.stdout.strip():
+        return None
+    try:
+        data = json.loads(proc.stdout)
+    except Exception:
+        return None
     if not data or data.get("type") != "file":
         return None
     try:
@@ -94,14 +107,15 @@ def parse_repo_url(url: str) -> Optional[tuple[str, str]]:
 
 
 def check_npm_exists(package_name: str) -> bool:
-    url = f"{NPM_REGISTRY}/{urllib.request.quote(package_name, safe='@/')}"
-    data = fetch_json(url)
+    encoded = package_name.replace("/", "%2F").replace("@", "%40")
+    url = f"{NPM_REGISTRY}/{encoded}"
+    data = fetch_json_curl(url)
     return data is not None and "error" not in data
 
 
 def check_pypi_exists(package_name: str) -> bool:
     url = f"{PYPI_API}/{package_name}/json"
-    data = fetch_json(url)
+    data = fetch_json_curl(url)
     return data is not None
 
 
