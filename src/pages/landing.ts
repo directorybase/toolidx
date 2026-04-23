@@ -283,6 +283,7 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
     <li><a href="/docs">API Docs</a></li>
     <li><a href="/openapi.json">OpenAPI</a></li>
     <li><a href="https://agenticwatch.dev">AgenticWatch</a></li>
+    <li><a href="https://github.com/directorybase/toolidx">GitHub</a></li>
   </ul>
 </nav>
 
