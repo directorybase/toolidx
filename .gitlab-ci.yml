@@ -1,3 +1,9 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'      # Run pipeline button
+    - if: '$CI_PIPELINE_SOURCE == "api"'      # API trigger (Robodorm)
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'  # downstream trigger
+
 stages:
   - qc
   - report
@@ -6,7 +12,6 @@ qc-server:
   stage: qc
   image: python:3.11-slim
   timeout: 10 minutes
-  when: manual
 
   variables:
     TOOLIDX_BASE: "https://toolidx.dev"
@@ -47,7 +52,6 @@ qc-server:
 report:
   stage: report
   image: python:3.11-slim
-  when: manual
   needs: ["qc-server"]
 
   variables:
