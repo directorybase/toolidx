@@ -6,6 +6,7 @@ import { ServerCreate } from "./endpoints/servers/serverCreate";
 import { ServerList } from "./endpoints/servers/serverList";
 import { ServerGet } from "./endpoints/servers/serverGet";
 import { ServerQcUpdate } from "./endpoints/servers/serverQcUpdate";
+import { ServerUpdate } from "./endpoints/servers/serverUpdate";
 import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
 
@@ -103,7 +104,7 @@ app.get("/.well-known/mcp.json", async (c) => {
 			servers_indexed: countRow?.count ?? 0,
 			last_updated: metaRow?.value ?? null,
 		},
-		contact: { website: "https://agenticwatch.dev" },
+		contact: { website: "https://directorybase.org" },
 	};
 	return c.json(payload);
 });
@@ -135,6 +136,7 @@ openapi.get("/v1/status", StatusEndpoint);
 openapi.get("/v1/servers", ServerList);
 openapi.post("/v1/servers", ServerCreate);
 openapi.get("/v1/servers/:id", ServerGet);
+openapi.patch("/v1/servers/:id", ServerUpdate);
 openapi.patch("/v1/servers/:id/qc", ServerQcUpdate);
 
 export default app;
