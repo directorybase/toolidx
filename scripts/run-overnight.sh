@@ -30,8 +30,8 @@ echo "[overnight] Starting pipeline — $(date)"
 echo "[overnight] Logs: $LOG_DIR"
 echo ""
 
-# Start discovery in background
-python3 "$SCRIPT_DIR/discover.py" \
+# Start discovery in background (-u = unbuffered stdout)
+python3 -u "$SCRIPT_DIR/discover.py" \
     2>&1 | tee "$LOG_DIR/discover.log" &
 DISCOVER_PID=$!
 echo "[overnight] discover.py started (PID $DISCOVER_PID)"
@@ -40,7 +40,7 @@ echo "[overnight] discover.py started (PID $DISCOVER_PID)"
 sleep 30
 
 # Start QC runner in background
-python3 "$SCRIPT_DIR/qc-runner.py" --workers 5 \
+python3 -u "$SCRIPT_DIR/qc-runner.py" --workers 5 \
     2>&1 | tee "$LOG_DIR/qc-runner.log" &
 QC_PID=$!
 echo "[overnight] qc-runner.py started (PID $QC_PID)"
