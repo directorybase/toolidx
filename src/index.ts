@@ -6,6 +6,7 @@ import { ServerCreate } from "./endpoints/servers/serverCreate";
 import { ServerList } from "./endpoints/servers/serverList";
 import { ServerGet } from "./endpoints/servers/serverGet";
 import { ServerQcUpdate } from "./endpoints/servers/serverQcUpdate";
+import { renderLanding } from "./pages/landing";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -61,6 +62,16 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
   <circle cx="48" cy="48" r="8" fill="#16A34A"/>
 </svg>`;
 
+app.get("/", async (c) => {
+	const [countRow, metaRow] = await Promise.all([
+		c.env.DB.prepare("SELECT COUNT(*) as count FROM servers WHERE status = 'active'").first<{ count: number }>(),
+		c.env.DB.prepare("SELECT value FROM metadata WHERE key = 'last_updated'").first<{ value: string }>(),
+	]);
+	return new Response(renderLanding(countRow?.count ?? 0, metaRow?.value ?? ""), {
+		headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+	});
+});
+
 app.get("/favicon.svg", (c) =>
 	new Response(FAVICON_SVG, {
 		headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" },
@@ -74,7 +85,7 @@ app.get("/favicon.ico", (c) =>
 );
 
 const openapi = fromHono(app, {
-	docs_url: "/",
+	docs_url: "/docs",
 	schema: {
 		info: {
 			title: "toolidx",
