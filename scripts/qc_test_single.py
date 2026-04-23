@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 DEFAULT_INSTALL_CMD = "npx -y @modelcontextprotocol/server-filesystem /tmp"
@@ -308,23 +309,28 @@ def patch_toolidx(result: dict, base_url: str, api_key: str) -> bool:
         payload["qc_error"] = result["qc_error"]
 
     print(f"\n[PATCH] Sending QC result for {server_id} to {base_url}...")
-    proc = subprocess.run(
-        [
-            "curl", "-s", "-X", "PATCH",
-            f"{base_url}/v1/servers/{server_id}/qc",
-            "-H", "Content-Type: application/json",
-            "-H", f"X-API-Key: {api_key}",
-            "-d", json.dumps(payload),
-        ],
-        capture_output=True, text=True, timeout=15,
-    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(payload, f)
+        tmp_path = f.name
     try:
+        proc = subprocess.run(
+            [
+                "curl", "-s", "-X", "PATCH",
+                f"{base_url}/v1/servers/{server_id}/qc",
+                "-H", "Content-Type: application/json",
+                "-H", f"X-API-Key: {api_key}",
+                "-d", f"@{tmp_path}",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
         resp = json.loads(proc.stdout)
         print(f"[PATCH] Response: {resp}")
         return resp.get("success", False)
     except Exception as e:
         print(f"[PATCH] Failed: {e}\n{proc.stdout}")
         return False
+    finally:
+        os.unlink(tmp_path)
 
 
 def main():

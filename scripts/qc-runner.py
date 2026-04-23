@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -94,19 +95,28 @@ def patch_qc_result(result: dict) -> bool:
     # Remove None values to keep payload clean
     payload = {k: v for k, v in payload.items() if v is not None}
 
-    proc = subprocess.run(
-        [
-            "curl", "-s", "-X", "PATCH",
-            f"{TOOLIDX_BASE}/v1/servers/{server_id}/qc",
-            "-H", "Content-Type: application/json",
-            "-H", f"X-API-Key: {TOOLIDX_API_KEY}",
-            "-d", json.dumps(payload),
-        ],
-        capture_output=True, text=True, timeout=15,
-    )
+    # Write payload to temp file — avoids "Argument list too long" for large tool schemas
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(payload, f)
+        tmp_path = f.name
+
     try:
+        proc = subprocess.run(
+            [
+                "curl", "-s", "-X", "PATCH",
+                f"{TOOLIDX_BASE}/v1/servers/{server_id}/qc",
+                "-H", "Content-Type: application/json",
+                "-H", f"X-API-Key: {TOOLIDX_API_KEY}",
+                "-d", f"@{tmp_path}",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
         resp = json.loads(proc.stdout)
         return resp.get("success", False)
+    except Exception:
+        return False
+    finally:
+        os.unlink(tmp_path)
     except Exception:
         return False
 
