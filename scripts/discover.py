@@ -18,6 +18,7 @@ import base64
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import tomllib
@@ -43,7 +44,22 @@ def github_headers() -> dict:
     return h
 
 
+def fetch_json_curl(url: str, headers: dict = None, timeout: int = 10) -> Optional[dict]:
+    """Use curl — avoids Cloudflare bot blocks that affect Python urllib."""
+    cmd = ["curl", "-s", "--max-time", str(timeout), url]
+    for k, v in (headers or {}).items():
+        cmd += ["-H", f"{k}: {v}"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        if not proc.stdout.strip():
+            return None
+        return json.loads(proc.stdout)
+    except Exception:
+        return None
+
+
 def fetch_json(url: str, headers: dict = None, timeout: int = 10) -> Optional[dict]:
+    """GitHub/npm/PyPI — urllib is fine (no Cloudflare). toolidx calls use fetch_json_curl."""
     try:
         req = urllib.request.Request(url, headers=headers or {})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -152,27 +168,25 @@ def discover_python(owner: str, repo: str) -> Optional[dict]:
 
 
 def patch_server(server_id: str, fields: dict) -> bool:
-    payload = json.dumps(fields).encode()
-    req = urllib.request.Request(
-        f"{TOOLIDX_BASE}/v1/servers/{server_id}",
-        data=payload,
-        method="PATCH",
-        headers={
-            "Content-Type": "application/json",
-            "X-API-Key": TOOLIDX_API_KEY,
-        },
+    proc = subprocess.run(
+        [
+            "curl", "-s", "-X", "PATCH",
+            f"{TOOLIDX_BASE}/v1/servers/{server_id}",
+            "-H", "Content-Type: application/json",
+            "-H", f"X-API-Key: {TOOLIDX_API_KEY}",
+            "-d", json.dumps(fields),
+        ],
+        capture_output=True, text=True, timeout=15,
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-            return data.get("success", False)
+        return json.loads(proc.stdout).get("success", False)
     except Exception:
         return False
 
 
 def get_servers_page(offset: int, limit: int = 100) -> tuple[list, int]:
     url = f"{TOOLIDX_BASE}/v1/servers?qc_status=pending&status=active&limit={limit}&offset={offset}"
-    data = fetch_json(url)
+    data = fetch_json_curl(url)
     if not data:
         return [], 0
     return data.get("result", []), data.get("total", 0)

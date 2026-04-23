@@ -38,9 +38,13 @@ QC_TIMEOUT = 60      # seconds per QC test before giving up
 
 
 def fetch_json(url: str) -> Optional[dict]:
+    """Use curl — avoids Cloudflare bot blocks that affect Python urllib."""
     try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
-            return json.loads(resp.read())
+        proc = subprocess.run(
+            ["curl", "-s", "--max-time", "15", url],
+            capture_output=True, text=True, timeout=20,
+        )
+        return json.loads(proc.stdout) if proc.stdout.strip() else None
     except Exception:
         return None
 
