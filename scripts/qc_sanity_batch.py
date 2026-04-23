@@ -16,10 +16,51 @@ import subprocess
 import sys
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from multiprocessing import Process, Queue
 
 sys.path.insert(0, os.path.dirname(__file__))
 from qc_test_single import run_qc
+
+PER_SERVER_TIMEOUT = 180  # 3 minutes hard kill per server
+
+
+def _qc_worker(install_cmd: str, server_id: str, result_q: Queue):
+    try:
+        result = run_qc(install_cmd, server_id, verbose=False)
+        result_q.put(result)
+    except Exception as e:
+        result_q.put({"server_id": server_id, "qc_status": "error", "qc_error": str(e),
+                      "tool_count": 0, "tool_schemas": [], "server_version": None,
+                      "protocol_version": None, "capabilities": None,
+                      "server_instructions": None, "resources_list": None,
+                      "prompts_list": None, "has_destructive_tools": False,
+                      "all_tools_readonly": False, "install_duration_ms": None,
+                      "requires_env_vars": False, "description_quality_score": None,
+                      "external_deps_detected": [], "setup_complexity": "low",
+                      "install_cmd": install_cmd})
+
+
+def run_qc_with_timeout(install_cmd: str, server_id: str) -> dict:
+    timeout_result = {
+        "server_id": server_id, "install_cmd": install_cmd,
+        "qc_status": "error", "qc_error": f"Hard timeout after {PER_SERVER_TIMEOUT}s",
+        "tool_count": 0, "tool_schemas": [], "server_version": None,
+        "protocol_version": None, "capabilities": None, "server_instructions": None,
+        "resources_list": None, "prompts_list": None, "has_destructive_tools": False,
+        "all_tools_readonly": False, "install_duration_ms": None,
+        "requires_env_vars": False, "description_quality_score": None,
+        "external_deps_detected": [], "setup_complexity": "low",
+    }
+    result_q: Queue = Queue()
+    p = Process(target=_qc_worker, args=(install_cmd, server_id, result_q), daemon=True)
+    p.start()
+    p.join(timeout=PER_SERVER_TIMEOUT)
+    if p.is_alive():
+        print(f"  [timeout] {server_id} — killing after {PER_SERVER_TIMEOUT}s", flush=True)
+        p.kill()
+        p.join(timeout=5)
+        return timeout_result
+    return result_q.get() if not result_q.empty() else timeout_result
 
 TOOLIDX_API_KEY = os.environ.get("TOOLIDX_API_KEY", "")
 TOOLIDX_BASE = os.environ.get("TOOLIDX_BASE", "https://toolidx.dev")
@@ -134,33 +175,7 @@ def main():
             error += 1
             continue
 
-        PER_SERVER_TIMEOUT = 180  # 3 minutes max per server
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(run_qc, install_cmd, server_id, False)
-            try:
-                result = future.result(timeout=PER_SERVER_TIMEOUT)
-            except FuturesTimeout:
-                result = {
-                    "server_id": server_id,
-                    "install_cmd": install_cmd,
-                    "qc_status": "error",
-                    "qc_error": f"Per-server timeout after {PER_SERVER_TIMEOUT}s",
-                    "tool_count": 0,
-                    "tool_schemas": [],
-                    "server_version": None,
-                    "protocol_version": None,
-                    "capabilities": None,
-                    "server_instructions": None,
-                    "resources_list": None,
-                    "prompts_list": None,
-                    "has_destructive_tools": False,
-                    "all_tools_readonly": False,
-                    "install_duration_ms": None,
-                    "requires_env_vars": False,
-                    "description_quality_score": None,
-                    "external_deps_detected": [],
-                    "setup_complexity": "low",
-                }
+        result = run_qc_with_timeout(install_cmd, server_id)
         ok = patch_qc_result(result, args.platform)
 
         status = result["qc_status"]
