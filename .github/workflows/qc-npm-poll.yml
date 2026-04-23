@@ -1,0 +1,33 @@
+name: Nightly npm Version Poll
+
+on:
+  schedule:
+    - cron: "0 2 * * *"   # 2am UTC every night
+  workflow_dispatch:       # manual trigger for testing
+
+jobs:
+  poll:
+    name: Poll npm registry for version changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      TOOLIDX_API_KEY: ${{ secrets.TOOLIDX_API_KEY }}
+      TOOLIDX_BASE: https://toolidx.dev
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run npm version poller
+        run: python3 scripts/qc_npm_poller.py --workers 20
+
+      - name: Write job summary
+        if: always()
+        run: |
+          echo "## npm Version Poll — $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "Checked active npm servers for version changes. Requeued servers appear in tonight's QC run." >> $GITHUB_STEP_SUMMARY

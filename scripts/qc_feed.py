@@ -139,6 +139,8 @@ def dispatch_batch(server_ids: list[str], dry_run: bool) -> bool:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--list-only", action="store_true",
+                        help="Print JSON array of first batch to stdout and exit (no dispatch)")
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--max-batches", type=int, default=4)
     args = parser.parse_args()
@@ -151,6 +153,12 @@ def main():
 
     if not candidates:
         print("[feed] Nothing to test.", flush=True)
+        if args.list_only:
+            print("[]")
+        sys.exit(0)
+
+    if args.list_only:
+        print(json.dumps(candidates[:args.batch_size]))
         sys.exit(0)
 
     batches = [
