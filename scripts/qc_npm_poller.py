@@ -20,8 +20,6 @@ import json
 import os
 import subprocess
 import sys
-import urllib.request
-import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TOOLIDX_BASE = os.environ.get("TOOLIDX_BASE", "https://toolidx.dev")
@@ -62,11 +60,13 @@ def fetch_npm_latest(package_name: str) -> str | None:
     """Return dist-tags.latest for a package, or None on error."""
     url = NPM_REGISTRY.format(pkg=package_name)
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            return data.get("latest")
-    except (urllib.error.URLError, json.JSONDecodeError, KeyError):
+        out = subprocess.run(
+            ["curl", "-s", "--max-time", "10", "-H", "Accept: application/json", url],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+        data = json.loads(out)
+        return data.get("latest") if isinstance(data, dict) else None
+    except (json.JSONDecodeError, subprocess.TimeoutExpired, KeyError):
         return None
 
 
