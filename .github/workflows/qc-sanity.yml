@@ -2,6 +2,11 @@ name: QC Sanity Run
 
 on:
   workflow_dispatch:
+    inputs:
+      server_ids:
+        description: 'JSON array of server IDs to test'
+        required: true
+        type: string
 
 jobs:
   qc:
@@ -12,22 +17,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server_id:
-          - github-com-1mcp-app-agent
-          - github-com-preflight-dev-preflight
-          - github-com-n24q02m-better-email-mcp
-          - github-com-furey-mongodb-lens
-          - github-com-gannonh-firebase-mcp
-          - github-com-gigamori-mcp-run-sql-connectorx
-          - github-com-greptimeteam-greptimedb-mcp-server
-          - github-com-henilcalagiya-google-sheets-mcp
-          - github-com-hydrolix-mcp-hydrolix
-          - github-com-idoru-influxdb-mcp-server
+        server_id: ${{ fromJSON(github.event.inputs.server_ids) }}
 
     env:
       TOOLIDX_API_KEY: ${{ secrets.TOOLIDX_API_KEY }}
       TOOLIDX_BASE: https://toolidx.dev
       PYTHONUNBUFFERED: "1"
+      CI_PLATFORM: github
 
     steps:
       - uses: actions/checkout@v4
@@ -56,36 +52,3 @@ jobs:
             --install-cmd "${{ steps.fetch.outputs.install_cmd }}" \
             --server-id "${{ matrix.server_id }}" \
             --patch
-
-  report:
-    name: Report
-    runs-on: ubuntu-latest
-    needs: qc
-    if: always()
-
-    env:
-      TOOLIDX_BASE: https://toolidx.dev
-
-    steps:
-      - name: Print results
-        run: |
-          SERVERS=(
-            github-com-1mcp-app-agent
-            github-com-preflight-dev-preflight
-            github-com-n24q02m-better-email-mcp
-            github-com-furey-mongodb-lens
-            github-com-gannonh-firebase-mcp
-            github-com-gigamori-mcp-run-sql-connectorx
-            github-com-greptimeteam-greptimedb-mcp-server
-            github-com-henilcalagiya-google-sheets-mcp
-            github-com-hydrolix-mcp-hydrolix
-            github-com-idoru-influxdb-mcp-server
-          )
-          printf "\n%-50s %-8s %5s\n" "SERVER" "STATUS" "TOOLS"
-          printf '%0.s-' {1..67} && echo
-          for sid in "${SERVERS[@]}"; do
-            DATA=$(curl -s --max-time 10 "$TOOLIDX_BASE/v1/servers/$sid")
-            STATUS=$(echo "$DATA" | jq -r '.result.qc_status // "unknown"')
-            TOOLS=$(echo "$DATA" | jq -r '.result.tool_count // 0')
-            printf "%-50s %-8s %5s\n" "$sid" "$STATUS" "$TOOLS"
-          done
