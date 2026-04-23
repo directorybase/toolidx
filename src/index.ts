@@ -53,6 +53,26 @@ app.use("*", async (c, next) => {
 	});
 });
 
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="12" fill="#111111"/>
+  <rect x="12" y="14" width="30" height="6" rx="3" fill="#FFFFFF"/>
+  <rect x="12" y="27" width="30" height="6" rx="3" fill="#FFFFFF"/>
+  <rect x="12" y="40" width="22" height="6" rx="3" fill="#FFFFFF"/>
+  <circle cx="48" cy="48" r="8" fill="#16A34A"/>
+</svg>`;
+
+app.get("/favicon.svg", (c) =>
+	new Response(FAVICON_SVG, {
+		headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" },
+	})
+);
+
+app.get("/favicon.ico", (c) =>
+	new Response(FAVICON_SVG, {
+		headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" },
+	})
+);
+
 const openapi = fromHono(app, {
 	docs_url: "/",
 	schema: {
