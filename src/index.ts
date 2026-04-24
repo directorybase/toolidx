@@ -11,6 +11,7 @@ import { ServerTools } from "./endpoints/servers/serverTools";
 import { ServerQcTools } from "./endpoints/servers/serverQcTools";
 import { ToolsSearch } from "./endpoints/tools/toolsSearch";
 import { ToolTestArgs } from "./endpoints/tools/toolTestArgs";
+import { QcArchive } from "./endpoints/servers/qcArchive";
 import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
 
@@ -146,5 +147,6 @@ openapi.get("/v1/servers/:id/tools", ServerTools);
 openapi.get("/v1/servers/:id/qc_tools", ServerQcTools);
 openapi.get("/v1/tools", ToolsSearch);
 openapi.patch("/v1/tools/test_args", ToolTestArgs);
+openapi.post("/internal/qc-archive", QcArchive);
 
 export default app;
