@@ -17,14 +17,17 @@ Environment:
 """
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import select
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 
 DEFAULT_INSTALL_CMD = "npx -y @modelcontextprotocol/server-filesystem /tmp"
 DEFAULT_SERVER_ID = "github-com-modelcontextprotocol-servers"
@@ -95,6 +98,7 @@ EXTERNAL_DEP_PATTERNS = [
     "chromium", "chrome", "playwright", "xvfb",
 ]
 
+
 def analyze_annotations(tools: list) -> tuple[bool, bool]:
     """Returns (has_destructive, all_readonly)."""
     has_destructive = False
@@ -152,6 +156,315 @@ def stderr_suggests_env_vars(stderr: str) -> bool:
     return any(k.lower() in low for k in keywords)
 
 
+# ── Platform detection ────────────────────────────────────────────────────────
+
+def detect_platform() -> str:
+    """Detect CI platform from environment variables.
+
+    Checks GITHUB_ACTIONS, GITLAB_CI, CIRRUS_CI in order.
+    Returns 'unknown' if none match.
+    """
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return "github"
+    if os.environ.get("GITLAB_CI") == "true":
+        return "gitlab"
+    if os.environ.get("CIRRUS_CI") == "true":
+        return "cirrus"
+    return "unknown"
+
+
+# ── Auth detection ────────────────────────────────────────────────────────────
+
+_AUTH_PATTERN = re.compile(
+    r"unauthorized|forbidden|authentication required|invalid api key|"
+    r"bad credentials|401|403|missing token",
+    re.IGNORECASE,
+)
+
+_AUTH_SCHEMA_PROPS = re.compile(
+    r"^(api_key|apikey|auth_token|bearer|credentials|access_token|secret)$",
+    re.IGNORECASE,
+)
+
+_AUTH_ENV_PATTERN = re.compile(r"(_TOKEN|_API_KEY|_SECRET|^OAUTH_)", re.IGNORECASE)
+
+
+def is_auth_error(text: str) -> bool:
+    """Return True if text contains auth-related error signals (spec rule #1)."""
+    return bool(_AUTH_PATTERN.search(text))
+
+
+def schema_requires_auth(tool_schema: dict) -> bool:
+    """Return True if the tool schema declares auth-related required properties (spec rule #2)."""
+    inner = tool_schema.get("inputSchema", tool_schema)
+    required = inner.get("required", [])
+    for r in required:
+        if _AUTH_SCHEMA_PROPS.match(r):
+            return True
+    return False
+
+
+# ── Destructive tool detection ─────────────────────────────────────────────────
+
+# Matches spec list: delete_ | drop_ | remove_ | truncate_ | exec_ | write_ | execute_ | run_ | terminate_
+# Uses (_|$) so "runner_status" does NOT match but "run_script" and "run" (bare) do.
+_DESTRUCTIVE_PATTERN = re.compile(
+    r"^(delete|drop|remove|truncate|exec|write|execute|run|terminate)(_|$)",
+    re.IGNORECASE,
+)
+
+
+def is_destructive_tool(tool: dict) -> bool:
+    """Return True if the tool should be skipped as potentially destructive."""
+    name = tool.get("name", "")
+    if _DESTRUCTIVE_PATTERN.match(name):
+        return True
+    ann = tool.get("annotations", {})
+    if ann.get("destructiveHint") or ann.get("x-destructive"):
+        return True
+    schema = tool.get("inputSchema", {})
+    if schema.get("x-destructive"):
+        return True
+    return False
+
+
+# ── Schema hashing ────────────────────────────────────────────────────────────
+
+def schema_hash(tool: dict) -> str:
+    """Stable SHA-256 hash of a tool's inputSchema (first 16 hex chars)."""
+    schema = tool.get("inputSchema", {})
+    canonical = json.dumps(schema, sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+# ── Naive arg generation ──────────────────────────────────────────────────────
+
+_FORMAT_DEFAULTS = {
+    "uri": "https://example.com",
+    "email": "test@example.com",
+    "uuid": "00000000-0000-0000-0000-000000000000",
+    "date-time": "2026-01-01T00:00:00Z",
+}
+
+
+def generate_naive_args(schema: dict) -> dict:
+    """
+    Generate naive test arguments from a JSON Schema (inputSchema).
+    Only populates required fields; recurses into nested objects.
+    Spec: Naive fallback rules.
+    """
+    props = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    args = {}
+    for name, defn in props.items():
+        if name not in required:
+            continue
+        args[name] = _naive_value(defn)
+    return args
+
+
+def _naive_value(defn: dict):
+    """Return a naive test value for a single schema property definition."""
+    if "enum" in defn and defn["enum"]:
+        return defn["enum"][0]
+    typ = defn.get("type", "string")
+    fmt = defn.get("format", "")
+    if typ == "string":
+        return _FORMAT_DEFAULTS.get(fmt, "test")
+    if typ in ("integer", "number"):
+        return 0
+    if typ == "boolean":
+        return False
+    if typ == "array":
+        return []
+    if typ == "object":
+        return generate_naive_args(defn)
+    return None
+
+
+# ── Redis arg job enqueue ─────────────────────────────────────────────────────
+
+def enqueue_arg_job(sh: str, tool_schema: dict) -> bool:
+    """Enqueue a Redis job for async MLX arg generation. Degrades gracefully if unreachable."""
+    try:
+        import redis  # type: ignore
+        r = redis.Redis(host="192.168.7.70", port=30059, socket_connect_timeout=3)
+        job = json.dumps({"schema_hash": sh, "schema": tool_schema})
+        r.rpush("qc:arg_jobs", job)
+        return True
+    except Exception as e:
+        print(f"[REDIS] Could not enqueue arg job (degrading gracefully): {e}", flush=True)
+        return False
+
+
+# ── Fetch cached test args ────────────────────────────────────────────────────
+
+def fetch_cached_args(sh: str, base_url: str) -> dict | None:
+    """Fetch cached test args from toolidx API. Returns None if not found or on error."""
+    try:
+        p = subprocess.run(
+            ["curl", "-s", f"{base_url}/v1/tools/test_args/{sh}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        data = json.loads(p.stdout)
+        if "args" in data:
+            return json.loads(data["args"])
+        return None
+    except Exception:
+        return None
+
+
+# ── Tool invocation ───────────────────────────────────────────────────────────
+
+def invoke_tool(mcp_proc, tool_name: str, args: dict, msg_id: int) -> tuple[str | None, float, str | None]:
+    """
+    Call a tool via MCP tools/call with 10s timeout.
+    Returns (raw_text, latency_ms, error_text).
+    """
+    t0 = time.time()
+    call_msg = msg("tools/call", msg_id, {"name": tool_name, "arguments": args})
+    send(mcp_proc, call_msg)
+    try:
+        resp = recv(mcp_proc, expected_id=msg_id, timeout=10)
+        latency_ms = (time.time() - t0) * 1000
+        if resp is None:
+            return None, latency_ms, "no response"
+        if "error" in resp:
+            return None, latency_ms, json.dumps(resp["error"])[:500]
+        content = resp.get("result", {}).get("content", [])
+        return json.dumps(content), latency_ms, None
+    except TimeoutError:
+        latency_ms = (time.time() - t0) * 1000
+        return None, latency_ms, "timeout"
+
+
+def classify_tool_result(
+    raw_text: str | None,
+    error_text: str | None,
+    tool: dict,
+    required_env_vars: list[str] | None = None,
+) -> tuple[str, str | None, str | None]:
+    """
+    Classify a tool invocation result per the spec status taxonomy.
+    Returns (status, error_class, error_sample).
+    """
+    if error_text == "timeout":
+        return "timeout", "timeout", None
+
+    combined = (raw_text or "") + (error_text or "")
+
+    # Rule #1: response text contains auth signals
+    if is_auth_error(combined):
+        return "needs-auth", "auth", (error_text or "")[:500]
+
+    # Rule #2: schema declares auth params
+    if schema_requires_auth(tool):
+        return "needs-auth", "auth", "schema requires auth parameter"
+
+    # Rule #3: server env hints
+    for ev in (required_env_vars or []):
+        if _AUTH_ENV_PATTERN.search(ev):
+            return "needs-auth", "auth", f"server env: {ev}"
+
+    if error_text:
+        low = error_text.lower()
+        if "crash" in low or "sigabrt" in low:
+            ec = "crash"
+        elif "schema" in low or "invalid" in low:
+            ec = "schema_mismatch"
+        elif "500" in error_text or "server error" in low:
+            ec = "server_error"
+        else:
+            ec = "tool_error"
+        return "broken", ec, error_text[:500]
+
+    return "working", None, None
+
+
+# ── Per-tool test loop ────────────────────────────────────────────────────────
+
+def test_all_tools(
+    mcp_proc,
+    tools: list,
+    server_id: str,
+    base_url: str,
+    required_env_vars: list[str] | None = None,
+    verbose: bool = True,
+) -> list[dict]:
+    """
+    Invoke each declared tool, classify, and return qc_tool_results list.
+    Spec: Test invocation strategy.
+    """
+    results = []
+    msg_id_start = 100  # avoid collisions with protocol setup ids (1-4)
+
+    for i, tool in enumerate(tools):
+        name = tool.get("name", f"tool_{i}")
+        tool_schema = tool.get("inputSchema", {})
+        tested_at = datetime.now(timezone.utc).isoformat()
+
+        # ── Destructive skip ──────────────────────────────────────────────────
+        if is_destructive_tool(tool):
+            print(f"  [SKIP] {name} — destructive", flush=True)
+            results.append({
+                "tool_name": name,
+                "status": "not-tested",
+                "not_tested_reason": "destructive",
+                "latency_ms": None,
+                "error_class": None,
+                "error_sample": None,
+                "sample_args": None,
+                "tested_at": tested_at,
+            })
+            continue
+
+        # ── Fetch or generate args ────────────────────────────────────────────
+        sh = schema_hash(tool)
+        args = fetch_cached_args(sh, base_url)
+        if args is None:
+            args = generate_naive_args(tool_schema)
+            enqueue_arg_job(sh, tool_schema)  # async; degrades gracefully
+
+        if verbose:
+            print(f"  [TEST] {name} args={json.dumps(args)[:120]}", flush=True)
+
+        # ── Invoke ────────────────────────────────────────────────────────────
+        mid = msg_id_start + i
+        raw_text, latency_ms, error_text = invoke_tool(mcp_proc, name, args, mid)
+
+        # ── Classify ──────────────────────────────────────────────────────────
+        status, error_class, error_sample = classify_tool_result(
+            raw_text, error_text, tool, required_env_vars
+        )
+
+        print(f"  [{status.upper()}] {name} ({latency_ms:.0f}ms)", flush=True)
+
+        results.append({
+            "tool_name": name,
+            "status": status,
+            "latency_ms": int(latency_ms),
+            "error_class": error_class,
+            "error_sample": error_sample,
+            "sample_args": json.dumps(args),
+            "tested_at": tested_at,
+        })
+
+    return results
+
+
+# ── Artifact write ────────────────────────────────────────────────────────────
+
+def write_artifact(result: dict, run_id: str) -> str:
+    """Write QC run results to a local JSON artifact file for the Gitea archive agent."""
+    artifact_dir = os.path.join(os.path.dirname(__file__), "..", "qc-artifacts")
+    os.makedirs(artifact_dir, exist_ok=True)
+    fname = os.path.join(artifact_dir, f"{result['server_id']}_{run_id}.json")
+    with open(fname, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"[ARTIFACT] Written to {fname}", flush=True)
+    return fname
+
+
 def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
     result = {
         "server_id": server_id,
@@ -175,8 +488,9 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
         "setup_complexity": "low",
         "hangs_on_start": False,
         "tools_list_duration_ms": None,
-        "qc_platform": os.environ.get("CI_PLATFORM", "local"),
+        "qc_platform": detect_platform(),
         "schema_weight_chars": None,
+        "qc_tool_results": [],
     }
 
     cmd_parts = install_cmd.split()
@@ -205,7 +519,6 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
         init_resp = recv(proc, expected_id=1, timeout=120)
 
         if init_resp is None:
-            # Process died before responding — read stderr from tempfile
             try:
                 with open(stderr_file.name, "rb") as f:
                     stderr = f.read().decode(errors="replace")
@@ -213,7 +526,9 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
                 stderr = ""
             result["requires_env_vars"] = stderr_suggests_env_vars(stderr)
             result["external_deps_detected"] = detect_external_deps(stderr)
-            result["setup_complexity"] = compute_setup_complexity(result["requires_env_vars"], result["external_deps_detected"])
+            result["setup_complexity"] = compute_setup_complexity(
+                result["requires_env_vars"], result["external_deps_detected"]
+            )
             result["qc_error"] = f"Process exited before initialize. stderr: {stderr[:300]}"
             result["qc_status"] = "failed"
             return result
@@ -264,7 +579,19 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
                 if ann.get("destructiveHint"):
                     flags.append("DESTRUCTIVE")
                 flag_str = f" [{', '.join(flags)}]" if flags else ""
-                print(f"  • {t['name']}{flag_str}: {t.get('description','')[:80]}")
+                print(f"  \u2022 {t['name']}{flag_str}: {t.get('description','')[:80]}")
+
+            # ── 2b. Per-tool invocation ───────────────────────────────────────
+            base_url = os.environ.get("TOOLIDX_BASE", "https://toolidx.dev")
+            print(f"\n[QC] Running per-tool tests...", flush=True)
+            result["qc_tool_results"] = test_all_tools(
+                mcp_proc=proc,
+                tools=tools,
+                server_id=server_id,
+                base_url=base_url,
+                required_env_vars=None,
+                verbose=verbose,
+            )
 
         # ── 3. Resources list (if supported) ─────────────────────────────────
         if "resources" in caps:
@@ -287,13 +614,14 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
                 print(f"[QC] {len(result['prompts_list'])} prompts found")
 
         result["external_deps_detected"] = []
-        result["setup_complexity"] = compute_setup_complexity(result["requires_env_vars"], result["external_deps_detected"])
+        result["setup_complexity"] = compute_setup_complexity(
+            result["requires_env_vars"], result["external_deps_detected"]
+        )
         result["qc_status"] = "passed"
 
     except TimeoutError as e:
         result["qc_error"] = str(e)
         result["qc_status"] = "error"
-        # hangs_on_start = timed out before initialize responded (install_duration_ms never set)
         result["hangs_on_start"] = result["install_duration_ms"] is None
         print(f"[QC] TIMEOUT: {e}", flush=True)
     except Exception as e:
@@ -324,14 +652,25 @@ def run_qc(install_cmd: str, server_id: str, verbose: bool = True) -> dict:
                 pass
         if result["qc_status"] in ("error", "failed") or not result["external_deps_detected"]:
             result["external_deps_detected"] = detect_external_deps(stderr)
-            result["setup_complexity"] = compute_setup_complexity(result["requires_env_vars"], result["external_deps_detected"])
+            result["setup_complexity"] = compute_setup_complexity(
+                result["requires_env_vars"], result["external_deps_detected"]
+            )
 
     return result
 
 
 def patch_toolidx(result: dict, base_url: str, api_key: str) -> bool:
+    """
+    PATCH QC results to toolidx API.
+
+    Tries /v1/servers/{id}/qc_run first; if 404 falls back to /v1/servers/{id}/qc.
+    If both endpoints fail, writes a local JSON artifact for the Gitea archive agent.
+    """
     server_id = result["server_id"]
+    run_id = hashlib.sha256(f"{server_id}{time.time()}".encode()).hexdigest()[:12]
+
     payload = {
+        "run_id": run_id,
         "qc_status": result["qc_status"],
         "tool_schemas": result["tool_schemas"] or [],
         "server_version": result["server_version"],
@@ -349,32 +688,62 @@ def patch_toolidx(result: dict, base_url: str, api_key: str) -> bool:
         "setup_complexity": result["setup_complexity"],
         "hangs_on_start": result.get("hangs_on_start", False),
         "tools_list_duration_ms": result.get("tools_list_duration_ms"),
-        "qc_platform": result.get("qc_platform", "local"),
+        "qc_platform": result.get("qc_platform", "unknown"),
         "schema_weight_chars": result.get("schema_weight_chars"),
+        "qc_tool_results": result.get("qc_tool_results", []),
     }
-    if result["qc_error"]:
+    if result.get("qc_error"):
         payload["qc_error"] = result["qc_error"]
 
     print(f"\n[PATCH] Sending QC result for {server_id} to {base_url}...")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(payload, f)
         tmp_path = f.name
+
+    proc = None
     try:
-        proc = subprocess.run(
-            [
-                "curl", "-s", "-X", "PATCH",
-                f"{base_url}/v1/servers/{server_id}/qc",
-                "-H", "Content-Type: application/json",
-                "-H", f"X-API-Key: {api_key}",
-                "-d", f"@{tmp_path}",
-            ],
-            capture_output=True, text=True, timeout=15,
-        )
-        resp = json.loads(proc.stdout)
-        print(f"[PATCH] Response: {resp}")
-        return resp.get("success", False)
+        success = False
+        for endpoint in (f"/v1/servers/{server_id}/qc_run", f"/v1/servers/{server_id}/qc"):
+            proc = subprocess.run(
+                [
+                    "curl", "-s", "-w", "\n%{http_code}",
+                    "-X", "PATCH",
+                    f"{base_url}{endpoint}",
+                    "-H", "Content-Type: application/json",
+                    "-H", f"X-API-Key: {api_key}",
+                    "-d", f"@{tmp_path}",
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            lines = proc.stdout.strip().rsplit("\n", 1)
+            body = lines[0] if len(lines) > 1 else proc.stdout
+            http_code = lines[-1].strip() if len(lines) > 1 else "0"
+            if http_code in ("200", "201"):
+                try:
+                    resp = json.loads(body)
+                    print(f"[PATCH] Response ({endpoint}): {resp}")
+                    success = resp.get("success", True)
+                except Exception:
+                    success = True
+                break
+            elif http_code == "404" and endpoint.endswith("/qc_run"):
+                print(f"[PATCH] /qc_run endpoint not found, trying /qc...", flush=True)
+                continue
+            else:
+                print(f"[PATCH] Unexpected HTTP {http_code} from {endpoint}: {body[:200]}")
+        else:
+            # All endpoints failed — write artifact for Gitea archive agent
+            artifact_result = dict(result)
+            artifact_result["run_id"] = run_id
+            write_artifact(artifact_result, run_id)
+            return False
+        return success
     except Exception as e:
-        print(f"[PATCH] Failed: {e}\n{proc.stdout}")
+        stdout = proc.stdout if proc is not None else ""
+        print(f"[PATCH] Failed: {e}\n{stdout}")
+        artifact_result = dict(result)
+        artifact_result["run_id"] = run_id
+        write_artifact(artifact_result, run_id)
         return False
     finally:
         os.unlink(tmp_path)
@@ -395,6 +764,7 @@ def main():
     print("=" * 60)
     print(f"  server_id:          {result['server_id']}")
     print(f"  qc_status:          {result['qc_status']}")
+    print(f"  qc_platform:        {result['qc_platform']}")
     print(f"  tool_count:         {result['tool_count']}")
     print(f"  server_version:     {result['server_version']}")
     print(f"  protocol_version:   {result['protocol_version']}")
@@ -410,6 +780,11 @@ def main():
         print(f"  resources:          {len(result['resources_list'])}")
     if result["prompts_list"] is not None:
         print(f"  prompts:            {len(result['prompts_list'])}")
+    tool_results = result.get("qc_tool_results", [])
+    if tool_results:
+        print(f"\n  per-tool results ({len(tool_results)} tools):")
+        for tr in tool_results:
+            print(f"    {tr['tool_name']}: {tr['status']} ({tr.get('latency_ms', '-')}ms)")
     if result["qc_error"]:
         print(f"  qc_error:           {result['qc_error']}")
 
