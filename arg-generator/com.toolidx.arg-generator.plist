@@ -9,7 +9,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/python3.13</string>
+    <string>/Users/gregory/mcp-arg-generator/venv/bin/python3</string>
     <string>/Users/gregory/mcp-arg-generator/worker.py</string>
   </array>
 
