@@ -18,8 +18,9 @@
 
   <key>EnvironmentVariables</key>
   <dict>
-    <key>TOOLIDX_API_KEY</key>
-    <string>REPLACE_WITH_TOOLIDX_API_KEY</string>
+    <!-- TOOLIDX_API_KEY must be injected at install time — do NOT hardcode here.
+         Run: launchctl setenv TOOLIDX_API_KEY <your-key>
+         Or:  install.sh will write a local .env and patch this file. -->
     <!-- Override model paths here if they differ from the defaults in worker.py -->
     <!-- <key>QWEN_MODEL_PATH</key>  <string>/path/to/Qwen2.5-7B-Instruct-4bit</string> -->
     <!-- <key>LLAMA_MODEL_PATH</key> <string>/path/to/Meta-Llama-3-8B-Instruct-4bit</string> -->
