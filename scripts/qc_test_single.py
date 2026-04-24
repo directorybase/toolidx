@@ -17,6 +17,7 @@ Environment:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import select
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 
 DEFAULT_INSTALL_CMD = "npx -y @modelcontextprotocol/server-filesystem /tmp"
 DEFAULT_SERVER_ID = "github-com-modelcontextprotocol-servers"
@@ -380,12 +382,82 @@ def patch_toolidx(result: dict, base_url: str, api_key: str) -> bool:
         os.unlink(tmp_path)
 
 
+
+def archive_to_gitea(result: dict, run_id: str, base_url: str, api_key: str) -> bool:
+    """
+    POST the completed QC run to POST /internal/qc-archive on the toolidx Worker.
+    The Worker commits the run as an immutable JSON file to agenticwatch-results on Gitea.
+
+    Archive path: qc-runs/YYYY-MM-DD/{server_id}_{run_id}.json
+    Commit message: qc: {server_id} on {platform} at {started_at}
+
+    The Gitea token lives in the Worker secret GITEA_TOKEN.
+    CI only needs TOOLIDX_API_KEY — the token never touches CI runners.
+    Idempotent: never overwrites a file that already exists (run_id is globally unique).
+    """
+    started_at = result.get("started_at") or datetime.now(timezone.utc).isoformat()
+    payload: dict = {
+        "run_id": run_id,
+        "server_id": result["server_id"],
+        "platform": result.get("qc_platform", "local"),
+        "status": result["qc_status"] if result["qc_status"] in ("passed", "failed", "error") else "error",
+        "started_at": started_at,
+        "tool_results": result.get("qc_tool_results", []),
+        "tool_schemas": result.get("tool_schemas", []),
+    }
+    for field in ("runner_os", "runner_arch", "runner_runtime_version", "finished_at"):
+        if result.get(field):
+            payload[field] = result[field]
+    for field in ("install_duration_ms", "tools_list_duration_ms"):
+        if result.get(field) is not None:
+            payload[field] = result[field]
+    tool_count = len(result.get("qc_tool_results", []))
+    if tool_count:
+        payload["tools_tested_count"] = tool_count
+    if result.get("qc_error"):
+        payload["error_class"] = result.get("error_class") or "qc_error"
+
+    print(f"\n[ARCHIVE] Archiving run {run_id} to Gitea via {base_url}/internal/qc-archive ...", flush=True)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(payload, f)
+        tmp_path = f.name
+    proc = None
+    try:
+        proc = subprocess.run(
+            [
+                "curl", "-s", "-X", "POST",
+                f"{base_url}/internal/qc-archive",
+                "-H", "Content-Type: application/json",
+                "-H", f"X-API-Key: {api_key}",
+                "-d", f"@{tmp_path}",
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        resp = json.loads(proc.stdout)
+        r = resp.get("result", {})
+        already = r.get("already_existed", False)
+        path = r.get("path", "?")
+        if resp.get("success"):
+            tag = "already archived" if already else "committed"
+            print(f"[ARCHIVE] OK — {tag} at {path}", flush=True)
+        else:
+            print(f"[ARCHIVE] Failed: {resp}", flush=True)
+        return resp.get("success", False)
+    except Exception as e:
+        stdout = proc.stdout if proc is not None else ""
+        print(f"[ARCHIVE] Error: {e}\n{stdout}", flush=True)
+        return False
+    finally:
+        os.unlink(tmp_path)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-cmd", default=DEFAULT_INSTALL_CMD)
     parser.add_argument("--server-id", default=DEFAULT_SERVER_ID)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--patch", action="store_true", help="PATCH result back to toolidx")
+    parser.add_argument("--archive", action="store_true",
+                        help="Archive run to Gitea via toolidx Worker (requires TOOLIDX_API_KEY)")
     args = parser.parse_args()
 
     result = run_qc(args.install_cmd, args.server_id, verbose=not args.quiet)
@@ -413,13 +485,23 @@ def main():
     if result["qc_error"]:
         print(f"  qc_error:           {result['qc_error']}")
 
+    api_key = os.environ.get("TOOLIDX_API_KEY", "")
+    base_url = os.environ.get("TOOLIDX_BASE", "https://toolidx.dev")
+
     if args.patch:
-        api_key = os.environ.get("TOOLIDX_API_KEY", "")
-        base_url = os.environ.get("TOOLIDX_BASE", "https://toolidx.dev")
         if not api_key:
             print("\n[PATCH] Skipped — TOOLIDX_API_KEY not set")
         else:
             patch_toolidx(result, base_url, api_key)
+
+    if args.archive:
+        if not api_key:
+            print("\n[ARCHIVE] Skipped — TOOLIDX_API_KEY not set")
+        else:
+            run_id = result.get("run_id") or hashlib.sha256(
+                f"{result['server_id']}{time.time()}".encode()
+            ).hexdigest()[:12]
+            archive_to_gitea(result, run_id, base_url, api_key)
 
 
 if __name__ == "__main__":
