@@ -8,7 +8,9 @@ import { ServerGet } from "./endpoints/servers/serverGet";
 import { ServerQcUpdate } from "./endpoints/servers/serverQcUpdate";
 import { ServerUpdate } from "./endpoints/servers/serverUpdate";
 import { ServerTools } from "./endpoints/servers/serverTools";
+import { ServerQcTools } from "./endpoints/servers/serverQcTools";
 import { ToolsSearch } from "./endpoints/tools/toolsSearch";
+import { ToolTestArgs } from "./endpoints/tools/toolTestArgs";
 import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
 
@@ -141,6 +143,8 @@ openapi.get("/v1/servers/:id", ServerGet);
 openapi.patch("/v1/servers/:id", ServerUpdate);
 openapi.patch("/v1/servers/:id/qc", ServerQcUpdate);
 openapi.get("/v1/servers/:id/tools", ServerTools);
+openapi.get("/v1/servers/:id/qc_tools", ServerQcTools);
 openapi.get("/v1/tools", ToolsSearch);
+openapi.patch("/v1/tools/test_args", ToolTestArgs);
 
 export default app;
