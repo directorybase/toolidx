@@ -38,11 +38,12 @@ TOOLIDX_API_KEY = os.environ.get("TOOLIDX_API_KEY", "")
 # Only one model is resident in memory at a time.
 QWEN_MODEL_PATH = os.environ.get(
     "QWEN_MODEL_PATH",
-    str(Path.home() / "models" / "mlx-community" / "Qwen2.5-7B-Instruct-4bit"),
+    str(Path.home() / "mlx-models" / "qwen2.5-7b-4bit"),
 )
+# Llama-3-8B not present on this M3 — fallback uses naive rules if Qwen fails
 LLAMA_MODEL_PATH = os.environ.get(
     "LLAMA_MODEL_PATH",
-    str(Path.home() / "models" / "mlx-community" / "Meta-Llama-3-8B-Instruct-4bit"),
+    str(Path.home() / "mlx-models" / "Meta-Llama-3-8B-Instruct-4bit"),
 )
 
 LOG_PATH = Path.home() / "mcp-arg-generator" / "worker.log"
