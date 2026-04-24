@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+  <key>Label</key>
+  <string>com.toolidx.arg-generator</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Uses the Python interpreter in the venv created by install.sh -->
+    <string>/Users/gregory/mcp-arg-generator/venv/bin/python</string>
+    <string>/Users/gregory/mcp-arg-generator/worker.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/gregory/mcp-arg-generator</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TOOLIDX_API_KEY</key>
+    <string>2778e5e9c0d621451af9f92e7b0b8dfc7ac7f8e87e9c3a218ef527d652de7742</string>
+    <!-- Override model paths here if they differ from the defaults in worker.py -->
+    <!-- <key>QWEN_MODEL_PATH</key>  <string>/path/to/Qwen2.5-7B-Instruct-4bit</string> -->
+    <!-- <key>LLAMA_MODEL_PATH</key> <string>/path/to/Meta-Llama-3-8B-Instruct-4bit</string> -->
+  </dict>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/gregory/mcp-arg-generator/worker.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/gregory/mcp-arg-generator/worker.log</string>
+
+  <!-- Throttle restarts: wait 10 s before relaunching after a crash -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+</dict>
+</plist>
