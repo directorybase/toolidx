@@ -282,21 +282,6 @@ def _naive_value(defn: dict):
     return None
 
 
-# ── Redis arg job enqueue ─────────────────────────────────────────────────────
-
-def enqueue_arg_job(sh: str, tool_schema: dict) -> bool:
-    """Enqueue a Redis job for async MLX arg generation. Degrades gracefully if unreachable."""
-    try:
-        import redis  # type: ignore
-        r = redis.Redis(host="192.168.7.70", port=30059, socket_connect_timeout=3)
-        job = json.dumps({"schema_hash": sh, "schema": tool_schema})
-        r.rpush("qc:arg_jobs", job)
-        return True
-    except Exception as e:
-        print(f"[REDIS] Could not enqueue arg job (degrading gracefully): {e}", flush=True)
-        return False
-
-
 # ── Fetch cached test args ────────────────────────────────────────────────────
 
 def fetch_cached_args(sh: str, base_url: str) -> dict | None:
@@ -423,7 +408,6 @@ def test_all_tools(
         args = fetch_cached_args(sh, base_url)
         if args is None:
             args = generate_naive_args(tool_schema)
-            enqueue_arg_job(sh, tool_schema)  # async; degrades gracefully
 
         if verbose:
             print(f"  [TEST] {name} args={json.dumps(args)[:120]}", flush=True)
@@ -861,20 +845,28 @@ def main():
     api_key = os.environ.get("TOOLIDX_API_KEY", "")
     base_url = os.environ.get("TOOLIDX_BASE", "https://toolidx.dev")
 
+    delivery_failed = False
+
     if args.patch:
         if not api_key:
-            print("\n[PATCH] Skipped — TOOLIDX_API_KEY not set")
-        else:
-            patch_toolidx(result, base_url, api_key)
+            print("\n[PATCH] FAILED — TOOLIDX_API_KEY not set", flush=True)
+            delivery_failed = True
+        elif not patch_toolidx(result, base_url, api_key):
+            delivery_failed = True
 
     if args.archive:
         if not api_key:
-            print("\n[ARCHIVE] Skipped — TOOLIDX_API_KEY not set")
+            print("\n[ARCHIVE] FAILED — TOOLIDX_API_KEY not set", flush=True)
+            delivery_failed = True
         else:
             run_id = result.get("run_id") or hashlib.sha256(
                 f"{result['server_id']}{time.time()}".encode()
             ).hexdigest()[:12]
-            archive_to_gitea(result, run_id, base_url, api_key)
+            if not archive_to_gitea(result, run_id, base_url, api_key):
+                delivery_failed = True
+
+    if delivery_failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
