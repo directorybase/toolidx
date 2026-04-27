@@ -26,31 +26,42 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from qc_classify import classify_failure  # noqa: E402
 
 BASE_URL = os.environ.get("TOOLIDX_BASE", "https://toolidx.dev")
-PAGE_SIZE = 200
+PAGE_SIZE = 100  # /v1/servers caps limit at 100; higher values silently return empty
 
 
-def fetch_page(offset: int) -> list[dict]:
-    """Fetch a page of servers. Returns the result list."""
-    url = f"{BASE_URL}/v1/servers?limit={PAGE_SIZE}&offset={offset}"
-    p = subprocess.run(
-        ["curl", "-s", "--max-time", "20", url],
-        capture_output=True, text=True, timeout=25,
-    )
-    data = json.loads(p.stdout)
-    return data.get("result", [])
+def fetch_page(page: int) -> list[dict]:
+    """Fetch a page of servers (1-indexed). Returns the result list, or [] on transient failure."""
+    url = f"{BASE_URL}/v1/servers?limit={PAGE_SIZE}&page={page}"
+    try:
+        p = subprocess.run(
+            ["curl", "-s", "--max-time", "20", url],
+            capture_output=True, text=True, timeout=25,
+        )
+        data = json.loads(p.stdout)
+        return data.get("result", [])
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError, json.JSONDecodeError) as e:
+        print(f"  [page {page} fetch failed — {type(e).__name__}: {e}; retrying once]", flush=True)
+        try:
+            p = subprocess.run(
+                ["curl", "-s", "--max-time", "20", url],
+                capture_output=True, text=True, timeout=25,
+            )
+            return json.loads(p.stdout).get("result", [])
+        except Exception:
+            return []
 
 
 def fetch_full(server_id: str) -> dict | None:
-    """Fetch full server record (list endpoint omits qc_error etc.)."""
-    p = subprocess.run(
-        ["curl", "-s", "--max-time", "15",
-         f"{BASE_URL}/v1/servers/{server_id}?slim=true"],
-        capture_output=True, text=True, timeout=20,
-    )
+    """Fetch full server record (list endpoint omits qc_error etc.). None on transient failure."""
     try:
+        p = subprocess.run(
+            ["curl", "-s", "--max-time", "15",
+             f"{BASE_URL}/v1/servers/{server_id}?slim=true"],
+            capture_output=True, text=True, timeout=20,
+        )
         data = json.loads(p.stdout)
         return data.get("result")
-    except Exception:
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError, json.JSONDecodeError):
         return None
 
 
@@ -66,7 +77,8 @@ def patch_failure_class(server_id: str, failure_class: str | None,
 
 
 def _do_patch(server_id: str, payload: dict, api_key: str) -> bool:
-    """Run the curl PATCH and return success bool."""
+    """Run the curl PATCH and return success bool. Never raises — transient
+    failures (timeout, connection reset) count as patch failures, not crashes."""
     import tempfile
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(payload, f)
@@ -74,20 +86,26 @@ def _do_patch(server_id: str, payload: dict, api_key: str) -> bool:
     try:
         p = subprocess.run(
             [
-                "curl", "-s", "-w", "\n%{http_code}",
+                "curl", "-s", "--max-time", "25", "-w", "\n%{http_code}",
                 "-X", "PATCH",
                 f"{BASE_URL}/v1/servers/{server_id}/qc",
                 "-H", "Content-Type: application/json",
                 "-H", f"X-API-Key: {api_key}",
                 "-d", f"@{tmp}",
             ],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=30,
         )
         lines = p.stdout.strip().rsplit("\n", 1)
         code = lines[-1] if len(lines) > 1 else "0"
         return code in ("200", "201")
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as e:
+        print(f"  [skip] {server_id} — {type(e).__name__}: {e}", flush=True)
+        return False
     finally:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def main():
@@ -108,12 +126,12 @@ def main():
     patched = 0
     skipped_pass = 0
     failed_patch = 0
-    offset = 0
+    page_num = 1
     seen = 0
     t0 = time.time()
 
     while True:
-        page = fetch_page(offset)
+        page = fetch_page(page_num)
         if not page:
             break
 
@@ -163,7 +181,7 @@ def main():
 
         if args.limit and seen >= args.limit:
             break
-        offset += PAGE_SIZE
+        page_num += 1
 
     elapsed = time.time() - t0
     print("\n" + "=" * 60)
