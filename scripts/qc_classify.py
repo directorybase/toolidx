@@ -7,7 +7,9 @@ Used by:
   - qc_test_single.py at end of run_qc() to stamp result["failure_class"]
   - backfill_failure_class.py to populate failure_class on historical rows
 
-Patterns are evaluated in declaration order; first match wins.
+Patterns are evaluated in declaration order; first match wins. Text patterns
+take precedence over the historical external_deps_detected list (which is
+substring-only and false-positives on package names like "ffmpeg-mcp").
 """
 
 import re
@@ -30,44 +32,92 @@ FAILURE_CLASSES = (
 )
 
 # ── Pattern table ─────────────────────────────────────────────────────────────
-# Order matters. Each entry: (failure_class, regex pattern, applies-when-status-in)
-_PATTERNS: tuple[tuple[str, re.Pattern, Optional[set[str]]], ...] = (
-    (
-        "install_fail_uvx_resolve",
-        re.compile(r"no solution found when resolving|×\s*Failed to resolve|uv::resolve", re.IGNORECASE),
-        None,
-    ),
+# Order matters. Each entry: (failure_class, regex pattern)
+# Text-based patterns evaluated BEFORE external_deps fallback to avoid the
+# substring-match false-positive ("ffmpeg-mcp" looks like missing ffmpeg).
+_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    # Package not on registry (covers npm 404, pip Could not find, uvx not in registry)
     (
         "install_fail_npm_404",
-        re.compile(r"\b404 not found\b|code\s+E404|npm error 404", re.IGNORECASE),
-        None,
+        re.compile(
+            r"\bnpm error 404\b|\bcode\s+E404\b|\b404 Not Found\b|"
+            r"could not find a version that satisfies|"
+            r"no matching distribution found|"
+            r"was not found in the package registry|"
+            r"could not determine executable to run",
+            re.IGNORECASE,
+        ),
     ),
+    # uv/uvx dependency resolution failure (covers Python version conflicts, transitive deps)
+    (
+        "install_fail_uvx_resolve",
+        re.compile(
+            r"no solution found when resolving|"
+            r"because [^\n]+ requires python|"
+            r"resolutionimpossible|"
+            r"\buv::resolve\b",
+            re.IGNORECASE,
+        ),
+    ),
+    # Slow download / network timeout during install
     (
         "install_fail_npm_timeout",
-        re.compile(r"\bDownloading [^\n]+MiB\b|ETIMEDOUT|network timeout|socket hang up", re.IGNORECASE),
-        None,
+        re.compile(
+            r"\bETIMEDOUT\b|\bsocket hang up\b|network timeout|connection reset|"
+            r"econnreset",
+            re.IGNORECASE,
+        ),
     ),
+    # Bin shim wrong (npm shim invokes node twice, or wrong shebang)
     (
         "bad_entrypoint_shim",
-        re.compile(r"unexpected positional arguments|module not found.*\.bin/|Cannot find module .*\.bin", re.IGNORECASE),
-        None,
+        re.compile(
+            r"unexpected positional arguments|"
+            r"cannot find module .*\.bin/|"
+            r"module not found.*\.bin/",
+            re.IGNORECASE,
+        ),
     ),
+    # Missing external binary (must say WHY it's missing, not just mention name)
     (
-        "tools_list_error",
-        re.compile(r"tools/list.*error|method not found.*tools", re.IGNORECASE),
-        None,
+        "missing_external_dep",
+        re.compile(
+            r"\bENOENT\b|"
+            r"\bcommand not found\b|"
+            r"\bis not installed\b|"
+            r"\bspawn [A-Za-z0-9_./-]+ ENOENT\b|"
+            r"\bno such file or directory: [\"']?[A-Za-z0-9_./-]*(?:ffmpeg|ffprobe|docker|chromium|chrome|playwright|imagemagick|pandoc|sqlite3)\b",
+            re.IGNORECASE,
+        ),
     ),
+    # MCP/JSON-RPC protocol errors (StreamableHTTPError, malformed JSON, etc.)
     (
         "protocol_error",
-        re.compile(r"json.*decode|invalid json|jsonrpc.*invalid|malformed.*response", re.IGNORECASE),
-        None,
+        re.compile(
+            r"streamablehttperror|jsonrpc.*invalid|"
+            r"invalid json|json\.?decode|malformed.*response|"
+            r"throw new (?:StreamableHTTPError|ProtocolError)",
+            re.IGNORECASE,
+        ),
+    ),
+    # tools/list itself errored (not just empty)
+    (
+        "tools_list_error",
+        re.compile(
+            r"tools/list.*error|method not found.*tools",
+            re.IGNORECASE,
+        ),
     ),
 )
 
+# Auth-required signals in qc_error text. Scanned BEFORE the pattern table.
 _AUTH_TEXT = re.compile(
-    r"unauthorized|forbidden|authentication required|invalid api key|"
-    r"bad credentials|missing token|api[_ ]?key|access[_ ]?token|credential|"
-    r"please set .* (?:token|key|secret)|env(?:ironment)? variable .* (?:required|missing|not set)",
+    r"\bunauthorized\b|\bforbidden\b|authentication required|invalid api key|"
+    r"bad credentials|missing token|"
+    r"(?:api[_ ]?key|access[_ ]?token|secret|credential)s?\b[^\n]{0,80}\brequired\b|"
+    r"please set .{0,40}(?:token|key|secret)|"
+    r"\benv(?:ironment)? variable\b[^\n]{0,80}\b(?:required|missing|not set)\b|"
+    r"\b[A-Z][A-Z0-9_]+_(?:TOKEN|API_KEY|SECRET|CREDENTIALS?)\b[^\n]{0,80}\b(?:required|missing|not set)\b",
     re.IGNORECASE,
 )
 
@@ -78,23 +128,28 @@ def classify_failure(
     *,
     hangs_on_start: bool = False,
     requires_env_vars: bool = False,
-    external_deps_detected: Optional[Iterable[str]] = None,
+    external_deps_detected: Optional[Iterable[str]] = None,  # accepted for API compat; unused
     tool_count: Optional[int] = None,
     tools_list_had_error: bool = False,
     all_tools_need_auth: bool = False,
 ) -> Optional[str]:
-    """Return one of FAILURE_CLASSES, or None when the row is a clean pass.
+    """Return one of FAILURE_CLASSES, or None for genuine clean passes.
 
-    Rules of thumb (in evaluation order):
-      passed + tools > 0 + not auth-only  -> None (no failure to classify)
+    Evaluation order (first match wins):
+      passed + tools > 0 + not auth-only  -> None
       passed + tools = 0                  -> tools_list_empty
       passed + auth-only tools            -> auth_required
       hangs_on_start flag                 -> hangs_on_start
       tools_list_had_error flag           -> tools_list_error
-      external_deps_detected non-empty    -> missing_external_dep
-      requires_env_vars / auth text       -> missing_env_vars
-      qc_error matches a pattern          -> matched class
-      everything else with non-pass status -> unknown
+      auth-keyword text                   -> missing_env_vars
+      requires_env_vars flag              -> missing_env_vars
+      pattern table                       -> matched class
+      non-pass status, no match           -> unknown
+
+    Note: external_deps_detected is intentionally ignored. The historical D1
+    column populated via substring match has too many false positives (e.g.
+    package names containing "ffmpeg" or "git"). The pattern table catches
+    real missing-dep failures via ENOENT / command-not-found phrasing.
     """
     status = (qc_status or "").lower()
 
@@ -103,24 +158,22 @@ def classify_failure(
             return "tools_list_empty"
         if all_tools_need_auth:
             return "auth_required"
-        return None  # genuine pass — don't classify
+        return None
 
-    # Strong signals first — these win over text matching.
     if hangs_on_start:
         return "hangs_on_start"
     if tools_list_had_error:
         return "tools_list_error"
-    if external_deps_detected:
-        return "missing_external_dep"
 
     text = qc_error or ""
 
-    if requires_env_vars or _AUTH_TEXT.search(text):
+    # Auth/env-var signals — keyword scan in stderr
+    if _AUTH_TEXT.search(text):
+        return "missing_env_vars"
+    if requires_env_vars:
         return "missing_env_vars"
 
-    for cls, pat, allowed_statuses in _PATTERNS:
-        if allowed_statuses and status not in allowed_statuses:
-            continue
+    for cls, pat in _PATTERNS:
         if pat.search(text):
             return cls
 
