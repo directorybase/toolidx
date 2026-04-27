@@ -36,6 +36,20 @@ export class ServerQcUpdate extends OpenAPIRoute {
 							tools_list_duration_ms: z.number().int().nullable().optional(),
 							qc_platform: z.enum(["github", "gitlab", "cirrus", "local", "unknown"]).nullable().optional(),
 							schema_weight_chars: z.number().int().nullable().optional(),
+							failure_class: z.enum([
+								"install_fail_uvx_resolve",
+								"install_fail_npm_404",
+								"install_fail_npm_timeout",
+								"bad_entrypoint_shim",
+								"missing_env_vars",
+								"missing_external_dep",
+								"hangs_on_start",
+								"protocol_error",
+								"tools_list_empty",
+								"tools_list_error",
+								"auth_required",
+								"unknown",
+							]).nullable().optional(),
 						}),
 					},
 				},
@@ -72,6 +86,7 @@ export class ServerQcUpdate extends OpenAPIRoute {
 			install_duration_ms, requires_env_vars,
 			description_quality_score, external_deps_detected, setup_complexity,
 			hangs_on_start, tools_list_duration_ms, qc_platform, schema_weight_chars,
+			failure_class,
 		} = data.body;
 
 		const now = new Date().toISOString();
@@ -88,6 +103,7 @@ export class ServerQcUpdate extends OpenAPIRoute {
 			    description_quality_score = ?, external_deps_detected = ?, setup_complexity = ?,
 			    hangs_on_start = ?, tools_list_duration_ms = ?, qc_platform = ?,
 			    schema_weight_chars = ?,
+			    failure_class = ?,
 			    updated_at = ?
 			WHERE id = ?
 		`).bind(
@@ -113,6 +129,7 @@ export class ServerQcUpdate extends OpenAPIRoute {
 			tools_list_duration_ms ?? null,
 			qc_platform ?? null,
 			schema_weight_chars ?? null,
+			failure_class ?? null,
 			now,
 			id,
 		).run();

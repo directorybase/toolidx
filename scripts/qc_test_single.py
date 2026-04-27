@@ -675,6 +675,7 @@ def patch_toolidx(result: dict, base_url: str, api_key: str) -> bool:
         "qc_platform": result.get("qc_platform", "unknown"),
         "schema_weight_chars": result.get("schema_weight_chars"),
         "qc_tool_results": result.get("qc_tool_results", []),
+        "failure_class": result.get("failure_class"),
     }
     if result.get("qc_error"):
         payload["qc_error"] = result["qc_error"]
@@ -813,11 +814,28 @@ def main():
 
     result = run_qc(args.install_cmd, args.server_id, verbose=not args.quiet)
 
+    # Classify failure mode (None for clean passes; one of FAILURE_CLASSES otherwise)
+    from qc_classify import classify_failure
+    tool_results = result.get("qc_tool_results", [])
+    all_auth = bool(tool_results) and all(
+        tr.get("status") == "needs-auth" for tr in tool_results
+    )
+    result["failure_class"] = classify_failure(
+        result.get("qc_error"),
+        result.get("qc_status"),
+        hangs_on_start=result.get("hangs_on_start", False),
+        requires_env_vars=result.get("requires_env_vars", False),
+        external_deps_detected=result.get("external_deps_detected") or [],
+        tool_count=result.get("tool_count"),
+        all_tools_need_auth=all_auth,
+    )
+
     print("\n" + "=" * 60)
     print("QC RESULT SUMMARY")
     print("=" * 60)
     print(f"  server_id:          {result['server_id']}")
     print(f"  qc_status:          {result['qc_status']}")
+    print(f"  failure_class:      {result['failure_class']}")
     print(f"  qc_platform:        {result['qc_platform']}")
     print(f"  tool_count:         {result['tool_count']}")
     print(f"  server_version:     {result['server_version']}")
