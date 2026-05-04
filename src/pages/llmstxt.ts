@@ -16,7 +16,7 @@ toolidx indexes and verifies MCP (Model Context Protocol) servers. Each listing 
 ## Endpoints
 
 - [GET /v1/status](https://toolidx.dev/v1/status): Service health and index metadata
-- [GET /v1/servers](https://toolidx.dev/v1/servers): List servers — filter by status, qc_status; paginate with limit/offset (max 100)
+- [GET /v1/servers](https://toolidx.dev/v1/servers): List servers — filter by status, qc_status; paginate with \`?limit=N&page=N\` (limit max 100, page is 1-indexed; \`offset\` is ignored)
 - [GET /v1/servers/{id}](https://toolidx.dev/v1/servers/{id}): Full server record
 - [GET /openapi.json](https://toolidx.dev/openapi.json): OpenAPI 3.1 specification
 
