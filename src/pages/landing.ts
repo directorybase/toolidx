@@ -15,8 +15,22 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>toolidx — Verified MCP Server Directory</title>
-  <meta name="description" content="Machine-readable verification and status for MCP servers and AI tools. Evaluated, structured, queryable.">
+  <meta name="description" content="Independent MCP server directory with machine-readable QC results — install commands, tool schemas, verification status, and multi-model evaluation scores. Evaluated, structured, queryable.">
+  <link rel="canonical" href="https://toolidx.dev/">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="toolidx">
+  <meta property="og:title" content="toolidx — Verified MCP Server Directory">
+  <meta property="og:description" content="Machine-readable verification and status for MCP servers and AI tools. Evaluated, structured, queryable.">
+  <meta property="og:url" content="https://toolidx.dev/">
+  <meta property="og:image" content="https://toolidx.dev/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="toolidx — Verified MCP Server Directory">
+  <meta name="twitter:description" content="Machine-readable verification and status for MCP servers and AI tools.">
+  <meta name="twitter:image" content="https://toolidx.dev/og.png">
+  <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://toolidx.dev/#website","url":"https://toolidx.dev/","name":"toolidx","description":"Independent MCP server directory and verification service","publisher":{"@id":"https://toolidx.dev/#org"}},{"@type":"Organization","@id":"https://toolidx.dev/#org","name":"toolidx","url":"https://toolidx.dev/","logo":"https://toolidx.dev/favicon.svg","sameAs":["https://github.com/directorybase/toolidx","https://directorybase.org"]}]}</script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
