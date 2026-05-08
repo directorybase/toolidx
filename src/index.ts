@@ -126,6 +126,48 @@ app.get("/favicon.ico", (c) =>
 	})
 );
 
+app.get("/sitemap.xml", async (c) => {
+	const meta = await c.env.DB.prepare(
+		"SELECT value FROM metadata WHERE key = 'last_updated'"
+	).first<{ value: string }>();
+	const lastmod = (meta?.value ?? new Date().toISOString()).slice(0, 10);
+
+	const urls = [
+		{ loc: "https://toolidx.dev/", priority: "1.0", changefreq: "daily" },
+		{ loc: "https://toolidx.dev/docs", priority: "0.7", changefreq: "weekly" },
+		{ loc: "https://toolidx.dev/llms.txt", priority: "0.5", changefreq: "weekly" },
+	];
+
+	const body = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls.map(u => `  <url>
+    <loc>${u.loc}</loc>
+    <lastmod>${lastmod}</lastmod>
+    <changefreq>${u.changefreq}</changefreq>
+    <priority>${u.priority}</priority>
+  </url>`).join("\n")}
+</urlset>`;
+
+	return new Response(body, {
+		headers: {
+			"Content-Type": "application/xml; charset=utf-8",
+			"Cache-Control": "public, max-age=3600",
+		},
+	});
+});
+
+app.get("/robots.txt", (c) =>
+	new Response(
+		"User-agent: *\nAllow: /\nDisallow: /v1/\n\nSitemap: https://toolidx.dev/sitemap.xml\n",
+		{
+			headers: {
+				"Content-Type": "text/plain; charset=utf-8",
+				"Cache-Control": "public, max-age=3600",
+			},
+		}
+	)
+);
+
 const openapi = fromHono(app, {
 	docs_url: "/docs",
 	schema: {
