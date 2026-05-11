@@ -11,6 +11,12 @@ function truncate(s: string, n: number): string {
 	if (s.length <= n) return s;
 	return s.slice(0, n - 1).trimEnd() + "…";
 }
+// JSON-LD script-body safety. Mirrors serverDetail.ts safeJsonLd().
+function safeJsonLd(obj: unknown): string {
+	return JSON.stringify(obj)
+		.replace(/</g, "\\u003c")
+		.replace(/-->/g, "--\\u003e");
+}
 
 export function renderLanding(serverCount: number, lastUpdated: string, recentServers: RecentServer[] = []): string {
 	const formatted = lastUpdated
@@ -37,6 +43,25 @@ export function renderLanding(serverCount: number, lastUpdated: string, recentSe
   </section>`
 		: "";
 
+	// ItemList JSON-LD for the Recently verified section. Eligible for carousel
+	// rich results. Only emit when we have items to list — empty ItemList is
+	// noise to crawlers.
+	const itemListLd = recentServers.length > 0
+		? safeJsonLd({
+			"@context": "https://schema.org",
+			"@type": "ItemList",
+			name: "Recently verified MCP servers",
+			itemListOrder: "https://schema.org/ItemListOrderDescending",
+			numberOfItems: recentServers.length,
+			itemListElement: recentServers.map((s, i) => ({
+				"@type": "ListItem",
+				position: i + 1,
+				url: `https://toolidx.dev/server/${encodeURIComponent(s.id)}`,
+				name: s.name,
+			})),
+		})
+		: "";
+
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -59,6 +84,7 @@ export function renderLanding(serverCount: number, lastUpdated: string, recentSe
   <meta name="twitter:description" content="Machine-readable verification and status for MCP servers and AI tools.">
   <meta name="twitter:image" content="https://toolidx.dev/og.png">
   <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://toolidx.dev/#website","url":"https://toolidx.dev/","name":"toolidx","description":"Independent MCP server directory and verification service","publisher":{"@id":"https://toolidx.dev/#org"}},{"@type":"Organization","@id":"https://toolidx.dev/#org","name":"toolidx","url":"https://toolidx.dev/","logo":"https://toolidx.dev/favicon.svg","sameAs":["https://github.com/directorybase/toolidx","https://directorybase.org"]}]}</script>
+  ${itemListLd ? `<script type="application/ld+json">${itemListLd}</script>` : ""}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 

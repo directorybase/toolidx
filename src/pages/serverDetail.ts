@@ -225,7 +225,7 @@ export function renderServerDetail(server: ServerRow): string {
 		: metaDescription;
 	const versionLabel = serverVersion ?? npmVersion ?? null;
 
-	// JSON-LD: build object in JS, serialize with safeJsonLd. NEVER esc() this.
+	// JSON-LD: build objects in JS, serialize with safeJsonLd. NEVER esc() these.
 	const ld: Record<string, unknown> = {
 		"@context": "https://schema.org",
 		"@type": "SoftwareApplication",
@@ -241,6 +241,16 @@ export function renderServerDetail(server: ServerRow): string {
 	if (description.trim().length > 0) ld.description = description.trim();
 	if (repoLink) ld.codeRepository = repoLink;
 	if (versionLabel) ld.softwareVersion = versionLabel;
+
+	// BreadcrumbList — eligible for site-link breadcrumb rich results in SERP.
+	const breadcrumb = {
+		"@context": "https://schema.org",
+		"@type": "BreadcrumbList",
+		itemListElement: [
+			{ "@type": "ListItem", position: 1, name: "toolidx", item: "https://toolidx.dev/" },
+			{ "@type": "ListItem", position: 2, name, item: canonical },
+		],
+	};
 
 	// Capabilities list — show only when we have something meaningful
 	const capItems: string[] = [];
@@ -311,6 +321,7 @@ export function renderServerDetail(server: ServerRow): string {
   <meta name="twitter:description" content="${esc(ogDescription)}">
   <meta name="twitter:image" content="https://toolidx.dev/og.png">
   <script type="application/ld+json">${safeJsonLd(ld)}</script>
+  <script type="application/ld+json">${safeJsonLd(breadcrumb)}</script>
   <style>${CSS}</style>
 </head>
 <body>
