@@ -112,7 +112,11 @@ app.get("/llms.txt", async (c) => {
 		c.env.DB.prepare("SELECT value FROM metadata WHERE key = 'last_updated'").first<{ value: string }>(),
 	]);
 	return new Response(renderLlmsTxt(countRow?.count ?? 0, metaRow?.value ?? ""), {
-		headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+		headers: {
+			"Content-Type": "text/plain; charset=utf-8",
+			"Cache-Control": "no-store",
+			"X-Robots-Tag": "noindex",
+		},
 	});
 });
 
@@ -181,10 +185,12 @@ app.get("/sitemap.xml", async (c) => {
 		 ORDER BY updated_at DESC`
 	).all<{ id: string; updated_at: string }>();
 
+	// /docs (SwaggerUI, JS-rendered) and /llms.txt (text/plain, LLM target) are
+	// intentionally NOT in the sitemap. GSC reported both as "Discovered —
+	// currently not indexed" because they're not realistic search targets.
+	// /llms.txt also gets an explicit X-Robots-Tag: noindex header (see route).
 	const staticUrls = [
 		{ loc: "https://toolidx.dev/", priority: "1.0", changefreq: "daily", lastmod },
-		{ loc: "https://toolidx.dev/docs", priority: "0.7", changefreq: "weekly", lastmod },
-		{ loc: "https://toolidx.dev/llms.txt", priority: "0.5", changefreq: "weekly", lastmod },
 	];
 	const serverUrls = (servers.results ?? []).map(s => ({
 		loc: safeServerLoc(s.id),
