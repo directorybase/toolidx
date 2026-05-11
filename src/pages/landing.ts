@@ -1,4 +1,18 @@
-export function renderLanding(serverCount: number, lastUpdated: string): string {
+type RecentServer = { id: string; name: string; description: string };
+
+// HTML-escape for attribute/text contexts. Mirrors serverDetail.ts esc().
+function escHtml(s: string | null | undefined): string {
+	if (s == null) return "";
+	return String(s).replace(/[&<>"']/g, ch => (
+		{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]!
+	));
+}
+function truncate(s: string, n: number): string {
+	if (s.length <= n) return s;
+	return s.slice(0, n - 1).trimEnd() + "…";
+}
+
+export function renderLanding(serverCount: number, lastUpdated: string, recentServers: RecentServer[] = []): string {
 	const formatted = lastUpdated
 		? new Date(lastUpdated).toLocaleString("en-US", {
 				month: "short", day: "numeric", year: "numeric",
@@ -8,6 +22,20 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
 		: "—";
 
 	const count = serverCount.toLocaleString("en-US");
+
+	const recentSection = recentServers.length > 0
+		? `<section class="recent">
+    <h2>Recently verified</h2>
+    <ul class="recent-list">
+      ${recentServers.map(s => `<li>
+        <a href="/server/${encodeURIComponent(s.id)}">
+          <span class="recent-name">${escHtml(s.name)}</span>
+          <span class="recent-desc">${escHtml(truncate((s.description ?? "").trim(), 110))}</span>
+        </a>
+      </li>`).join("\n      ")}
+    </ul>
+  </section>`
+		: "";
 
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -247,6 +275,65 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
       line-height: 1.5;
     }
 
+    /* ── Recently verified ── */
+    .recent {
+      width: 100%;
+      max-width: 880px;
+      margin: 72px auto 0;
+      text-align: left;
+    }
+
+    .recent h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .recent-list {
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .recent-list li { background: var(--surface); }
+
+    .recent-list a {
+      display: block;
+      padding: 14px 18px;
+      text-decoration: none;
+      color: var(--text);
+      transition: background 0.15s;
+    }
+
+    .recent-list a:hover { background: #222; }
+
+    .recent-name {
+      display: block;
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--green-lt);
+      letter-spacing: -0.01em;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    .recent-desc {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
     /* ── Footer ── */
     footer {
       padding: 24px 40px;
@@ -276,6 +363,8 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
       .stats { flex-direction: column; gap: 0; }
       .stat + .stat { border-left: none; border-top: 1px solid var(--border); }
       .values { flex-direction: column; }
+      .recent { margin-top: 56px; }
+      .recent-list { grid-template-columns: 1fr; }
       footer { flex-direction: column; gap: 16px; text-align: center; }
     }
   </style>
@@ -340,6 +429,8 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
       <div class="value-desc">Multi-model evaluation scores agents can read and act on.</div>
     </div>
   </div>
+
+  ${recentSection}
 </main>
 
 <footer>

@@ -14,6 +14,7 @@ import { ToolTestArgs } from "./endpoints/tools/toolTestArgs";
 import { QcArchive } from "./endpoints/servers/qcArchive";
 import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
+import { renderServerDetail, renderServerNotFound } from "./pages/serverDetail";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -70,12 +71,38 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
 </svg>`;
 
 app.get("/", async (c) => {
-	const [countRow, metaRow] = await Promise.all([
+	const [countRow, metaRow, recentRows] = await Promise.all([
 		c.env.DB.prepare("SELECT COUNT(*) as count FROM servers WHERE status = 'active'").first<{ count: number }>(),
 		c.env.DB.prepare("SELECT value FROM metadata WHERE key = 'last_updated'").first<{ value: string }>(),
+		c.env.DB.prepare(
+			`SELECT id, name, description FROM servers
+			 WHERE status = 'active' AND qc_status = 'passed'
+			   AND description IS NOT NULL AND length(description) >= 20
+			 ORDER BY qc_tested_at DESC LIMIT 12`
+		).all<{ id: string; name: string; description: string }>(),
 	]);
-	return new Response(renderLanding(countRow?.count ?? 0, metaRow?.value ?? ""), {
-		headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+	return new Response(
+		renderLanding(countRow?.count ?? 0, metaRow?.value ?? "", recentRows.results ?? []),
+		{ headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } }
+	);
+});
+
+app.get("/server/:id", async (c) => {
+	const id = c.req.param("id");
+	const server = await c.env.DB.prepare(
+		"SELECT * FROM servers WHERE id = ? AND status = 'active'"
+	).bind(id).first<Record<string, unknown>>();
+	if (!server) {
+		return new Response(renderServerNotFound(id), {
+			status: 404,
+			headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+		});
+	}
+	return new Response(renderServerDetail(server), {
+		headers: {
+			"Content-Type": "text/html; charset=utf-8",
+			"Cache-Control": "public, max-age=0, must-revalidate",
+		},
 	});
 });
 
@@ -126,23 +153,52 @@ app.get("/favicon.ico", (c) =>
 	})
 );
 
+// Sitemap escaping helpers — URL-path encoding and XML escaping are distinct concerns;
+// both apply when interpolating IDs into <loc>. See plan v3 §3.5.
+function xmlEsc(s: string): string {
+	return s.replace(/[&<>"']/g, ch => (
+		{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[ch]!
+	));
+}
+function safeServerLoc(id: string): string {
+	return `https://toolidx.dev/server/${xmlEsc(encodeURIComponent(id))}`;
+}
+
 app.get("/sitemap.xml", async (c) => {
 	const meta = await c.env.DB.prepare(
 		"SELECT value FROM metadata WHERE key = 'last_updated'"
 	).first<{ value: string }>();
 	const lastmod = (meta?.value ?? new Date().toISOString()).slice(0, 10);
 
-	const urls = [
-		{ loc: "https://toolidx.dev/", priority: "1.0", changefreq: "daily" },
-		{ loc: "https://toolidx.dev/docs", priority: "0.7", changefreq: "weekly" },
-		{ loc: "https://toolidx.dev/llms.txt", priority: "0.5", changefreq: "weekly" },
+	// Indexable servers per §3.4 tier rules: any active server with a real description.
+	// The renderer applies noindex meta for thin pages anyway, but excluding them
+	// here keeps the sitemap from advertising URLs that say "don't index me."
+	const servers = await c.env.DB.prepare(
+		`SELECT id, updated_at FROM servers
+		 WHERE status = 'active'
+		   AND description IS NOT NULL
+		   AND length(description) >= 20
+		 ORDER BY updated_at DESC`
+	).all<{ id: string; updated_at: string }>();
+
+	const staticUrls = [
+		{ loc: "https://toolidx.dev/", priority: "1.0", changefreq: "daily", lastmod },
+		{ loc: "https://toolidx.dev/docs", priority: "0.7", changefreq: "weekly", lastmod },
+		{ loc: "https://toolidx.dev/llms.txt", priority: "0.5", changefreq: "weekly", lastmod },
 	];
+	const serverUrls = (servers.results ?? []).map(s => ({
+		loc: safeServerLoc(s.id),
+		priority: "0.6",
+		changefreq: "weekly",
+		lastmod: xmlEsc((s.updated_at ?? lastmod).slice(0, 10)),
+	}));
+	const all = [...staticUrls, ...serverUrls];
 
 	const body = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map(u => `  <url>
+${all.map(u => `  <url>
     <loc>${u.loc}</loc>
-    <lastmod>${lastmod}</lastmod>
+    <lastmod>${u.lastmod}</lastmod>
     <changefreq>${u.changefreq}</changefreq>
     <priority>${u.priority}</priority>
   </url>`).join("\n")}
