@@ -1,5 +1,9 @@
 // Per-server HTML detail page renderer.
 // Spec: outputs/2026-05-09-claude-toolidx-per-server-pages-plan-v3.md §3.1–§3.4
+// Phase 3 addition (2026-05-11): facet strip below status badge.
+
+import { facetsFor, type Facet } from "../lib/facets";
+import { classify } from "../lib/category";
 
 type ServerRow = Record<string, unknown>;
 
@@ -128,6 +132,16 @@ h1 {
 .badge-pending { background: rgba(245, 158, 11, 0.15); color: var(--amber); border: 1px solid rgba(245, 158, 11, 0.4); }
 .meta { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .meta-sep { margin: 0 8px; color: var(--border); }
+.facet-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+.facet { display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; border: 1px solid; }
+.facet-good    { background: rgba(22, 163, 74, 0.10); color: var(--green-lt); border-color: rgba(22, 163, 74, 0.30); }
+.facet-warn    { background: rgba(245, 158, 11, 0.10); color: var(--amber);    border-color: rgba(245, 158, 11, 0.30); }
+.facet-bad     { background: rgba(239, 68, 68, 0.10);  color: var(--red);      border-color: rgba(239, 68, 68, 0.30); }
+.facet-info    { background: rgba(96, 165, 250, 0.10); color: #60a5fa;         border-color: rgba(96, 165, 250, 0.30); }
+.facet-neutral { background: rgba(115, 115, 115, 0.15); color: var(--muted);   border-color: rgba(115, 115, 115, 0.40); }
+.category-link { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 12px; }
+.category-link a { color: var(--green-lt); text-decoration: none; }
+.category-link a:hover { text-decoration: underline; }
 section { margin-bottom: 40px; }
 h2 {
   font-size: 18px; font-weight: 600; color: var(--text);
@@ -214,6 +228,8 @@ export function renderServerDetail(server: ServerRow): string {
 	const badge = badgeFor(qcStatus);
 	const canonical = canonicalFor(id);
 	const repoLink = safeRepoLink(repositoryUrl);
+	const facets: Facet[] = facetsFor(server);
+	const category = classify(name, description);
 
 	const robots = tier === "noindex" ? "noindex, follow" : "index, follow";
 	const title = `${name} — MCP server | toolidx`;
@@ -334,6 +350,10 @@ ${NAV}
     <span class="badge ${badge.cls}">${esc(badge.label)}</span>
     ${metaLineHtml ? `<span class="meta">${metaLineHtml}</span>` : ""}
   </div>
+  ${facets.length > 0 ? `<div class="facet-strip">${facets.map(f =>
+    `<span class="facet facet-${f.variant}"${f.title ? ` title="${esc(f.title)}"` : ""}>${esc(f.label)}</span>`
+  ).join("")}</div>` : ""}
+  <p class="category-link">Category: <a href="/category/${encodeURIComponent(category.slug)}">${esc(category.displayName)}</a></p>
   ${installSection}
   ${capabilitiesSection}
   ${instructionsSection}

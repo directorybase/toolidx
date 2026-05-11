@@ -1,4 +1,5 @@
 type RecentServer = { id: string; name: string; description: string };
+type CategorySummary = { slug: string; displayName: string; tagline: string; count: number };
 
 // HTML-escape for attribute/text contexts. Mirrors serverDetail.ts esc().
 function escHtml(s: string | null | undefined): string {
@@ -18,7 +19,12 @@ function safeJsonLd(obj: unknown): string {
 		.replace(/-->/g, "--\\u003e");
 }
 
-export function renderLanding(serverCount: number, lastUpdated: string, recentServers: RecentServer[] = []): string {
+export function renderLanding(
+	serverCount: number,
+	lastUpdated: string,
+	recentServers: RecentServer[] = [],
+	categories: CategorySummary[] = [],
+): string {
 	const formatted = lastUpdated
 		? new Date(lastUpdated).toLocaleString("en-US", {
 				month: "short", day: "numeric", year: "numeric",
@@ -60,6 +66,20 @@ export function renderLanding(serverCount: number, lastUpdated: string, recentSe
 				name: s.name,
 			})),
 		})
+		: "";
+
+	const categorySection = categories.length > 0
+		? `<section class="categories">
+    <h2>Browse by category</h2>
+    <ul class="category-grid">
+      ${categories.map(c => `<li>
+        <a href="/category/${encodeURIComponent(c.slug)}">
+          <span class="category-name">${escHtml(c.displayName)}</span>
+          <span class="category-count">${c.count.toLocaleString("en-US")}</span>
+        </a>
+      </li>`).join("\n      ")}
+    </ul>
+  </section>`
 		: "";
 
 	return `<!DOCTYPE html>
@@ -360,6 +380,53 @@ export function renderLanding(serverCount: number, lastUpdated: string, recentSe
       line-height: 1.45;
     }
 
+    /* ── Browse by category ── */
+    .categories {
+      width: 100%;
+      max-width: 880px;
+      margin: 56px auto 0;
+      text-align: left;
+    }
+    .categories h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .category-grid {
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .category-grid li { background: var(--surface); }
+    .category-grid a {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      text-decoration: none;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    .category-grid a:hover { background: #222; }
+    .category-name { color: var(--text); }
+    .category-count {
+      color: var(--green-lt);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
     /* ── Footer ── */
     footer {
       padding: 24px 40px;
@@ -391,6 +458,8 @@ export function renderLanding(serverCount: number, lastUpdated: string, recentSe
       .values { flex-direction: column; }
       .recent { margin-top: 56px; }
       .recent-list { grid-template-columns: 1fr; }
+      .categories { margin-top: 40px; }
+      .category-grid { grid-template-columns: 1fr 1fr; }
       footer { flex-direction: column; gap: 16px; text-align: center; }
     }
   </style>
@@ -456,6 +525,7 @@ export function renderLanding(serverCount: number, lastUpdated: string, recentSe
     </div>
   </div>
 
+  ${categorySection}
   ${recentSection}
 </main>
 

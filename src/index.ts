@@ -15,6 +15,8 @@ import { QcArchive } from "./endpoints/servers/qcArchive";
 import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
 import { renderServerDetail, renderServerNotFound } from "./pages/serverDetail";
+import { renderCategoryDetail, renderCategoryNotFound } from "./pages/categoryDetail";
+import { CATEGORIES, categoryBySlug, classify } from "./lib/category";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -71,7 +73,7 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
 </svg>`;
 
 app.get("/", async (c) => {
-	const [countRow, metaRow, recentRows] = await Promise.all([
+	const [countRow, metaRow, recentRows, allActive] = await Promise.all([
 		c.env.DB.prepare("SELECT COUNT(*) as count FROM servers WHERE status = 'active'").first<{ count: number }>(),
 		c.env.DB.prepare("SELECT value FROM metadata WHERE key = 'last_updated'").first<{ value: string }>(),
 		c.env.DB.prepare(
@@ -80,11 +82,51 @@ app.get("/", async (c) => {
 			   AND description IS NOT NULL AND length(description) >= 20
 			 ORDER BY qc_tested_at DESC LIMIT 12`
 		).all<{ id: string; name: string; description: string }>(),
+		// For "Browse by category" — count servers per category by classifying in JS.
+		// Single SELECT with id+name+description; downstream cost is the substring scan.
+		c.env.DB.prepare(
+			`SELECT id, name, description FROM servers
+			 WHERE status = 'active'
+			   AND description IS NOT NULL AND length(description) >= 20`
+		).all<{ id: string; name: string; description: string }>(),
 	]);
+	const categoryCounts: Record<string, number> = {};
+	for (const c of CATEGORIES) categoryCounts[c.slug] = 0;
+	for (const row of (allActive.results ?? [])) {
+		const cat = classify(row.name, row.description);
+		categoryCounts[cat.slug] = (categoryCounts[cat.slug] ?? 0) + 1;
+	}
+	const categorySummaries = CATEGORIES.map(c => ({ ...c, count: categoryCounts[c.slug] ?? 0 }));
 	return new Response(
-		renderLanding(countRow?.count ?? 0, metaRow?.value ?? "", recentRows.results ?? []),
+		renderLanding(countRow?.count ?? 0, metaRow?.value ?? "", recentRows.results ?? [], categorySummaries),
 		{ headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } }
 	);
+});
+
+app.get("/category/:slug", async (c) => {
+	const slug = c.req.param("slug");
+	const category = categoryBySlug(slug);
+	if (!category) {
+		return new Response(renderCategoryNotFound(slug), {
+			status: 404,
+			headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+		});
+	}
+	// Pull all active servers with descriptions, classify in JS, filter by slug.
+	// Cached at the edge per the /category/* Cache Rule (2h Edge TTL).
+	const all = await c.env.DB.prepare(
+		`SELECT * FROM servers
+		 WHERE status = 'active'
+		   AND description IS NOT NULL AND length(description) >= 20
+		 ORDER BY qc_tested_at DESC NULLS LAST, updated_at DESC`
+	).all<Record<string, unknown>>();
+	const matching = (all.results ?? []).filter(r => classify(String(r.name ?? ""), String(r.description ?? "")).slug === slug);
+	return new Response(renderCategoryDetail(category, matching), {
+		headers: {
+			"Content-Type": "text/html; charset=utf-8",
+			"Cache-Control": "public, max-age=0, must-revalidate",
+		},
+	});
 });
 
 app.get("/server/:id", async (c) => {
@@ -192,13 +234,20 @@ app.get("/sitemap.xml", async (c) => {
 	const staticUrls = [
 		{ loc: "https://toolidx.dev/", priority: "1.0", changefreq: "daily", lastmod },
 	];
+	// Category pages (16) — each is a real indexable URL with ItemList JSON-LD.
+	const categoryUrls = CATEGORIES.map(cat => ({
+		loc: `https://toolidx.dev/category/${xmlEsc(encodeURIComponent(cat.slug))}`,
+		priority: "0.8",
+		changefreq: "daily",
+		lastmod,
+	}));
 	const serverUrls = (servers.results ?? []).map(s => ({
 		loc: safeServerLoc(s.id),
 		priority: "0.6",
 		changefreq: "weekly",
 		lastmod: xmlEsc((s.updated_at ?? lastmod).slice(0, 10)),
 	}));
-	const all = [...staticUrls, ...serverUrls];
+	const all = [...staticUrls, ...categoryUrls, ...serverUrls];
 
 	const body = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
