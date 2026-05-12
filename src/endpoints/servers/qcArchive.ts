@@ -19,10 +19,10 @@ import { OpenAPIRoute } from "chanfana";
 import { z } from "zod";
 import type { AppContext } from "../../types";
 import { requireAuth } from "../../middleware/auth";
+import { GITEA_BASE, GITEA_RESULTS_OWNER, GITEA_RESULTS_REPO } from "../../lib/gitea";
 
-const GITEA_BASE = "http://192.168.7.70:30008";
-const GITEA_REPO_OWNER = "gitea_admin";
-const GITEA_REPO_NAME = "agenticwatch-results";
+const GITEA_REPO_OWNER = GITEA_RESULTS_OWNER;
+const GITEA_REPO_NAME = GITEA_RESULTS_REPO;
 
 const ToolResultSchema = z.object({
 	tool_name: z.string(),
