@@ -13,6 +13,7 @@
 import { OpenAPIRoute } from "chanfana";
 import { z } from "zod";
 import type { AppContext } from "../../types";
+import { selectComposite } from "../../lib/composite";
 
 type EvalRow = {
 	agent: string;
@@ -22,6 +23,7 @@ type EvalRow = {
 	score: number | null;
 	verdict: string | null;
 	notes: string | null;
+	description: string | null;
 	created_at: string;
 };
 
@@ -36,7 +38,7 @@ export class ServerEvals extends OpenAPIRoute {
 		},
 		responses: {
 			"200": {
-				description: "Evals rows + aggregate (may be empty)",
+				description: "Evals rows + aggregate + composite (may be empty)",
 				content: {
 					"application/json": {
 						schema: z.object({
@@ -50,6 +52,7 @@ export class ServerEvals extends OpenAPIRoute {
 									score: z.number().nullable(),
 									verdict: z.string().nullable(),
 									notes: z.string().nullable(),
+									description: z.string().nullable(),
 									created_at: z.string(),
 								})),
 								aggregate: z.object({
@@ -62,6 +65,23 @@ export class ServerEvals extends OpenAPIRoute {
 										revise: z.number().int(),
 										reject: z.number().int(),
 									}),
+								}).nullable(),
+								composite: z.object({
+									text: z.string(),
+									source: z.object({
+										agent: z.string(),
+										model: z.string().nullable(),
+										pass: z.number().int().nullable(),
+										lens: z.string(),
+										score: z.number().nullable(),
+									}),
+									consensus: z.enum(["high", "mixed", "contested"]).nullable(),
+									concerns: z.array(z.object({
+										agent: z.string(),
+										lens: z.string(),
+										verdict: z.enum(["revise", "reject"]),
+										note_excerpt: z.string(),
+									})),
 								}).nullable(),
 							}),
 						}),
@@ -76,10 +96,11 @@ export class ServerEvals extends OpenAPIRoute {
 		const data = await this.getValidatedData<typeof this.schema>();
 		const { id } = data.params;
 
-		// 404 vs. empty distinction: check server existence first.
+		// 404 vs. empty distinction: check server existence first; also pull
+		// composite_override for §3.7 selection.
 		const serverRow = await c.env.DB.prepare(
-			"SELECT id FROM servers WHERE id = ?"
-		).bind(id).first<{ id: string }>();
+			"SELECT id, composite_override FROM servers WHERE id = ?"
+		).bind(id).first<{ id: string; composite_override: string | null }>();
 		if (!serverRow) {
 			return c.json(
 				{ success: false, errors: [{ code: 404, message: "Not found" }] },
@@ -88,15 +109,16 @@ export class ServerEvals extends OpenAPIRoute {
 		}
 
 		const rowsRes = await c.env.DB.prepare(
-			`SELECT agent, model, lens, pass, score, verdict, notes, created_at
+			`SELECT agent, model, lens, pass, score, verdict, notes, description, created_at
 			 FROM evals WHERE server_id = ?
 			 ORDER BY agent, lens, pass`
 		).bind(id).all<EvalRow>();
 
 		const rows: EvalRow[] = rowsRes.results ?? [];
 		const aggregate = computeAggregate(rows);
+		const composite = selectComposite(rows, serverRow.composite_override ?? null);
 
-		return { success: true, result: { rows, aggregate } };
+		return { success: true, result: { rows, aggregate, composite } };
 	}
 }
 
