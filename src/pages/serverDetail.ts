@@ -1,11 +1,14 @@
 // Per-server HTML detail page renderer.
 // Spec: outputs/2026-05-09-claude-toolidx-per-server-pages-plan-v3.md §3.1–§3.4
 // Phase 3 addition (2026-05-11): facet strip below status badge.
-// Sanity Panel addition (2026-05-11): review block per
-// outputs/2026-05-11-claude-toolidx-multi-agent-review-surface-plan-v5.md §3.5
+// Sanity Panel addition (2026-05-11): review block per v5 §3.5.
+// Sanity Panel v6 IA refactor (2026-05-12): composite description replaces
+// page summary; consensus + dissent moves up; per-agent panels show insights
+// only. Spec: outputs/2026-05-12-claude-toolidx-multi-agent-review-surface-plan-v6.md §3.5
 
 import { facetsFor, type Facet } from "../lib/facets";
 import { classify } from "../lib/category";
+import type { Composite } from "../lib/composite";
 
 type ServerRow = Record<string, unknown>;
 
@@ -17,6 +20,7 @@ export type EvalRowForRender = {
 	score: number | null;
 	verdict: string | null;
 	notes: string | null;
+	description: string | null;
 	created_at: string;
 };
 
@@ -185,7 +189,27 @@ pre {
 .links-list a { color: var(--green-lt); text-decoration: none; }
 .links-list a:hover { text-decoration: underline; }
 .instructions { color: var(--text); white-space: pre-wrap; max-width: 760px; }
-/* Sanity Panel review block (v5 §3.5) */
+/* Composite meta block (v6 §3.5 Delta 2) — sits between page summary and status-row.
+   Surfaces consensus badge + dissent disclosure ABOVE the fold. */
+.composite-meta-block { background: rgba(74, 222, 128, 0.04); border: 1px solid rgba(74, 222, 128, 0.20); border-left: 3px solid var(--green-lt); border-radius: 5px; padding: 14px 18px; margin-bottom: 20px; }
+.composite-meta-line { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.consensus-badge { display: inline-block; padding: 3px 10px; border-radius: 3px; border: 1px solid; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
+.consensus-high      { background: rgba(22, 163, 74, 0.10); color: var(--green-lt); border-color: rgba(22, 163, 74, 0.30); }
+.consensus-mixed     { background: rgba(245, 158, 11, 0.10); color: var(--amber);    border-color: rgba(245, 158, 11, 0.30); }
+.consensus-contested { background: rgba(239, 68, 68, 0.10);  color: var(--red);      border-color: rgba(239, 68, 68, 0.30); }
+.composite-source { color: var(--muted); }
+.composite-source strong { color: var(--text); font-weight: 600; }
+.composite-model { color: var(--green-lt); font-family: var(--mono); }
+.composite-concerns { margin-top: 10px; }
+.composite-concerns summary { cursor: pointer; font-family: var(--mono); font-size: 11px; color: var(--muted); list-style: none; }
+.composite-concerns summary::-webkit-details-marker { display: none; }
+.composite-concerns summary::before { content: '⚠ '; color: var(--amber); }
+.composite-concerns ul { list-style: none; margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.composite-concerns li { padding: 4px 0; border-top: 1px solid var(--border); }
+.composite-concerns li:first-child { border-top: none; }
+.composite-concerns .concern-agent { color: var(--red); font-weight: 600; }
+.composite-concerns .concern-lens { color: var(--text); }
+/* Sanity Panel review block (v5 §3.5; refactored v6 §3.5 Delta 3) */
 .review-headline { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 16px; }
 .review-mean { font-family: var(--mono); font-size: 28px; font-weight: 700; color: var(--green-lt); letter-spacing: -0.02em; }
 .review-mean .label { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -204,7 +228,9 @@ pre {
 .review-grid th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .review-grid td.score-num { color: var(--green-lt); }
 .review-grid td.score-null { color: var(--muted); }
-.review-note { color: var(--muted); font-size: 11px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* v6: per-pass finding renders untruncated — these ARE the insights agents read. */
+.review-finding { color: var(--text); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-width: 620px; }
+.review-verdict { color: var(--muted); white-space: nowrap; }
 footer {
   padding: 24px 40px; border-top: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
@@ -257,7 +283,16 @@ const FOOTER = `
 </footer>`;
 
 // Sanity Panel review block — aggregated headline + per-agent <details> drill-in.
-// Spec: outputs/2026-05-11-claude-toolidx-multi-agent-review-surface-plan-v5.md §3.5
+// Spec: outputs/2026-05-12-claude-toolidx-multi-agent-review-surface-plan-v6.md §3.5
+// v6 changes vs v5:
+//   - h2 renamed: "5-agent Sanity Panel — per-lens findings"
+//   - Per-agent <details> summary line includes the lens (one agent owns one lens)
+//   - Per-agent grid columns: pass | finding | verdict (lens + score columns dropped)
+//   - finding column = notes, rendered untruncated
+//   - No per-agent description blocks (descriptions are surfaced via composite
+//     at the top of the page and via the API)
+//   - No standalone composite callout block here — composite lives in the
+//     composite-meta block rendered above the status-row.
 // Empty-state: returns "" so the block is omitted entirely from the DOM.
 function renderReviewSection(evals: EvalsBundle | null): string {
 	if (!evals || !evals.aggregate) return "";
@@ -279,30 +314,37 @@ function renderReviewSection(evals: EvalsBundle | null): string {
 
 	const agentBlocks = agentKeys.map(agent => {
 		const agentRows = (byAgent.get(agent) ?? []).slice().sort((a, b) => {
-			if (a.pass !== b.pass) return a.pass - b.pass;
-			return a.lens.localeCompare(b.lens);
+			return a.pass - b.pass;
 		});
 		const firstRow = agentRows[0];
 		const model = firstRow?.model ?? "";
+		// One agent owns one lens — surface it in the summary line (not the grid).
+		const lens = firstRow?.lens ?? "";
 		const rowsHtml = agentRows.map(r => {
-			const scoreCell = typeof r.score === "number"
-				? `<td class="score-num">${r.score.toFixed(1)}</td>`
-				: `<td class="score-null">—</td>`;
-			const verdictCell = r.verdict ? esc(r.verdict) : "—";
-			const noteCell = r.notes ? `<td class="review-note" title="${esc(r.notes)}">${esc(truncate(r.notes, 80))}</td>` : `<td class="review-note">—</td>`;
-			return `<tr><td>${r.pass}</td><td>${esc(r.lens)}</td>${scoreCell}<td>${verdictCell}</td>${noteCell}</tr>`;
+			const findingCell = r.notes
+				? `<td class="review-finding">${esc(r.notes)}</td>`
+				: `<td class="review-finding">—</td>`;
+			const verdictCell = r.verdict
+				? `<td class="review-verdict">${esc(r.verdict)}</td>`
+				: `<td class="review-verdict">—</td>`;
+			return `<tr><td>${r.pass}</td>${findingCell}${verdictCell}</tr>`;
 		}).join("");
+		const summaryParts = [
+			`agent ${esc(agent)}`,
+			model ? `<span class="meta">· ${esc(model)}</span>` : "",
+			lens ? `<span class="meta">· ${esc(lens)} lens</span>` : "",
+		].filter(Boolean).join(" ");
 		return `<details>
-      <summary>agent ${esc(agent)}${model ? ` <span class="meta">· ${esc(model)}</span>` : ""}</summary>
+      <summary>${summaryParts}</summary>
       <table class="review-grid">
-        <thead><tr><th>pass</th><th>lens</th><th>score</th><th>verdict</th><th>notes</th></tr></thead>
+        <thead><tr><th>pass</th><th>finding</th><th>verdict</th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
     </details>`;
 	}).join("\n");
 
 	return `<section id="evals-block">
-    <h2>5-agent Sanity Panel review</h2>
+    <h2>5-agent Sanity Panel — per-lens findings</h2>
     <div class="review-headline">
       <span class="review-mean">${aggregate.mean_score.toFixed(1)}<span class="label">mean (pass 3)</span></span>
       <div class="review-meta">
@@ -316,10 +358,60 @@ function renderReviewSection(evals: EvalsBundle | null): string {
   </section>`;
 }
 
-export function renderServerDetail(server: ServerRow, evals: EvalsBundle | null = null): string {
+// v6 §3.5 Delta 2: composite-meta block sits between page summary and status-row.
+// Renders only when composite has a non-null consensus tag (or when sourced from
+// operator-curated override — in which case we still show the meta line).
+function renderCompositeMeta(composite: Composite | null): string {
+	if (!composite) return "";
+	const isOverride = composite.source.agent === "operator";
+	if (!isOverride && composite.consensus === null) return "";
+
+	const sourceLine = isOverride
+		? `<span class="composite-source">generated by <strong>operator-curated</strong></span>`
+		: `<span class="composite-source">generated by <strong>agent ${esc(composite.source.agent)}</strong>${
+			composite.source.model ? ` · <span class="composite-model">${esc(composite.source.model)}</span>` : ""
+		}${
+			composite.source.pass != null ? ` · pass ${composite.source.pass}` : ""
+		} · ${esc(composite.source.lens)} lens${
+			typeof composite.source.score === "number" ? ` · score ${composite.source.score.toFixed(1)}` : ""
+		}</span>`;
+
+	const consensusBadge = composite.consensus !== null
+		? `<span class="consensus-badge consensus-${esc(composite.consensus)}">${esc(composite.consensus)}</span>`
+		: "";
+
+	const concernsBlock = composite.concerns.length > 0
+		? `<details class="composite-concerns">
+        <summary>${composite.concerns.length} dissent flagged — read before relying on this composite</summary>
+        <ul>${composite.concerns.map(c =>
+			`<li><span class="concern-agent">agent ${esc(c.agent)}</span> · <span class="concern-lens">${esc(c.lens)}</span> · <strong>${esc(c.verdict)}</strong>${c.note_excerpt ? ` — ${esc(c.note_excerpt)}` : ""}</li>`
+		).join("")}</ul>
+      </details>`
+		: "";
+
+	return `<div class="composite-meta-block">
+    <div class="composite-meta-line">
+      ${consensusBadge}
+      ${sourceLine}
+    </div>
+    ${concernsBlock}
+  </div>`;
+}
+
+export function renderServerDetail(
+	server: ServerRow,
+	evals: EvalsBundle | null = null,
+	summary: string | null = null,
+	composite: Composite | null = null,
+): string {
 	const id = String(server.id ?? "");
 	const name = String(server.name ?? id);
 	const description = (server.description as string | null) ?? "";
+	// v6 §3.5 Delta 1: summary text source is the composite when available,
+	// else server.description (single-agent fallback). Caller is responsible
+	// for that pick; renderer just uses what it's given. Backwards-compatible
+	// default: no caller-supplied summary → use server.description.
+	const summaryText = (summary ?? description).trim();
 	const qcStatus = String(server.qc_status ?? "pending");
 	const installCommand = (server.install_command as string | null) ?? null;
 	const toolCount = (server.tool_count as number | null) ?? null;
@@ -390,9 +482,13 @@ export function renderServerDetail(server: ServerRow, evals: EvalsBundle | null 
 		? metaLineParts.join(`<span class="meta-sep">·</span>`)
 		: "";
 
-	const summaryHtml = description.trim().length > 0
-		? `<p class="summary">${esc(description.trim())}</p>`
+	// v6 §3.5 Delta 1: <p class="summary"> renders summaryText (composite when
+	// available, server.description otherwise). The single-agent fallback path
+	// is preserved when neither is present.
+	const summaryHtml = summaryText.length > 0
+		? `<p class="summary">${esc(summaryText)}</p>`
 		: `<p class="summary empty">No description provided.</p>`;
+	const compositeMetaHtml = renderCompositeMeta(composite);
 
 	const installSection = installCommand
 		? `<section id="install">
@@ -457,6 +553,7 @@ ${NAV}
   <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">toolidx</a> &nbsp;›&nbsp; <span>/server/${esc(id)}</span></nav>
   <h1>${esc(name)}</h1>
   ${summaryHtml}
+  ${compositeMetaHtml}
   <div class="status-row">
     <span class="badge ${badge.cls}">${esc(badge.label)}</span>
     ${metaLineHtml ? `<span class="meta">${metaLineHtml}</span>` : ""}

@@ -15,6 +15,7 @@ import { ToolTestArgs } from "./endpoints/tools/toolTestArgs";
 import { QcArchive } from "./endpoints/servers/qcArchive";
 import { SanityIngest } from "./endpoints/internal/sanityIngest";
 import { runSanityBridge, type BridgeMode } from "./lib/sanityBridge";
+import { selectComposite } from "./lib/composite";
 import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
 import { renderServerDetail, renderServerNotFound } from "./pages/serverDetail";
@@ -144,17 +145,25 @@ app.get("/server/:id", async (c) => {
 		});
 	}
 	// Sanity Panel evals — fetch alongside server row, pass to renderer.
-	// Spec: outputs/2026-05-11-claude-toolidx-multi-agent-review-surface-plan-v5.md §3.5
+	// Spec: outputs/2026-05-12-claude-toolidx-multi-agent-review-surface-plan-v6.md §3.4 + §3.5
 	const evalsRes = await c.env.DB.prepare(
-		`SELECT agent, model, lens, pass, score, verdict, notes, created_at
+		`SELECT agent, model, lens, pass, score, verdict, notes, description, created_at
 		 FROM evals WHERE server_id = ?
 		 ORDER BY agent, lens, pass`
 	).bind(id).all<{
 		agent: string; model: string; lens: string; pass: number;
-		score: number | null; verdict: string | null; notes: string | null; created_at: string;
+		score: number | null; verdict: string | null; notes: string | null;
+		description: string | null; created_at: string;
 	}>();
-	const evalsBundle = buildEvalsBundle(evalsRes.results ?? []);
-	return new Response(renderServerDetail(server, evalsBundle), {
+	const evalsRows = evalsRes.results ?? [];
+	const evalsBundle = buildEvalsBundle(evalsRows);
+	// v6 §3.7: composite text selection (operator-curated lens priority).
+	const compositeOverride = (server.composite_override as string | null) ?? null;
+	const composite = selectComposite(evalsRows, compositeOverride);
+	// v6 §3.5 Delta 1: composite text replaces page summary when available;
+	// single-agent server.description is the fallback.
+	const summary = composite?.text ?? ((server.description as string | null) ?? null);
+	return new Response(renderServerDetail(server, evalsBundle, summary, composite), {
 		headers: {
 			"Content-Type": "text/html; charset=utf-8",
 			"Cache-Control": "public, max-age=0, must-revalidate",
