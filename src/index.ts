@@ -12,6 +12,7 @@ import { ServerQcTools } from "./endpoints/servers/serverQcTools";
 import { ToolsSearch } from "./endpoints/tools/toolsSearch";
 import { ToolTestArgs } from "./endpoints/tools/toolTestArgs";
 import { QcArchive } from "./endpoints/servers/qcArchive";
+import { SanityIngest } from "./endpoints/internal/sanityIngest";
 import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
 import { renderServerDetail, renderServerNotFound } from "./pages/serverDetail";
@@ -301,5 +302,6 @@ openapi.get("/v1/servers/:id/qc_tools", ServerQcTools);
 openapi.get("/v1/tools", ToolsSearch);
 openapi.patch("/v1/tools/test_args", ToolTestArgs);
 openapi.post("/internal/qc-archive", QcArchive);
+openapi.post("/internal/sanity-ingest", SanityIngest);
 
 export default app;
