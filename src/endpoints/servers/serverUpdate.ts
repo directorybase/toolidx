@@ -23,6 +23,10 @@ export class ServerUpdate extends OpenAPIRoute {
 							tags: z.array(z.string()).optional(),
 							status: z.enum(["active", "pending", "rejected"]).optional(),
 							qc_status: z.literal("pending").optional(),
+							// v6 §3.7: operator-curated composite description. Set to a
+							// non-empty string to override the Pass-3-selection heuristic;
+							// pass empty string or null (via explicit JSON null) to clear.
+							composite_override: z.string().nullable().optional(),
 						}),
 					},
 				},
@@ -65,6 +69,12 @@ export class ServerUpdate extends OpenAPIRoute {
 		if (body.tags !== undefined) { sets.push("tags = ?"); params.push(JSON.stringify(body.tags)); }
 		if (body.status !== undefined) { sets.push("status = ?"); params.push(body.status); }
 		if (body.qc_status !== undefined) { sets.push("qc_status = ?"); params.push(body.qc_status); }
+		if (body.composite_override !== undefined) {
+			sets.push("composite_override = ?");
+			// Empty string normalizes to null so the read path treats it as "cleared".
+			const v = body.composite_override;
+			params.push(v == null || v === "" ? null : v);
+		}
 
 		if (sets.length === 0) {
 			return c.json({ success: false, errors: [{ code: 400, message: "No fields to update" }] }, 400);
