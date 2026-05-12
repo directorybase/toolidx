@@ -1,11 +1,37 @@
 // Per-server HTML detail page renderer.
 // Spec: outputs/2026-05-09-claude-toolidx-per-server-pages-plan-v3.md §3.1–§3.4
 // Phase 3 addition (2026-05-11): facet strip below status badge.
+// Sanity Panel addition (2026-05-11): review block per
+// outputs/2026-05-11-claude-toolidx-multi-agent-review-surface-plan-v5.md §3.5
 
 import { facetsFor, type Facet } from "../lib/facets";
 import { classify } from "../lib/category";
 
 type ServerRow = Record<string, unknown>;
+
+export type EvalRowForRender = {
+	agent: string;
+	model: string;
+	lens: string;
+	pass: number;
+	score: number | null;
+	verdict: string | null;
+	notes: string | null;
+	created_at: string;
+};
+
+export type EvalsAggregate = {
+	agent_count: number;
+	pass: number;
+	mean_score: number;
+	score_spread: number;
+	verdict_split: { approve: number; revise: number; reject: number };
+};
+
+export type EvalsBundle = {
+	rows: EvalRowForRender[];
+	aggregate: EvalsAggregate;
+};
 
 // HTML-escape for attribute/text contexts ONLY. Never use for JSON-LD <script> bodies.
 function esc(s: string | null | undefined): string {
@@ -159,6 +185,26 @@ pre {
 .links-list a { color: var(--green-lt); text-decoration: none; }
 .links-list a:hover { text-decoration: underline; }
 .instructions { color: var(--text); white-space: pre-wrap; max-width: 760px; }
+/* Sanity Panel review block (v5 §3.5) */
+.review-headline { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 16px; }
+.review-mean { font-family: var(--mono); font-size: 28px; font-weight: 700; color: var(--green-lt); letter-spacing: -0.02em; }
+.review-mean .label { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+.review-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.review-chip { display: inline-block; padding: 3px 8px; border-radius: 3px; border: 1px solid var(--border); font-family: var(--mono); font-size: 11px; font-weight: 500; }
+.review-chip.approve { background: rgba(22, 163, 74, 0.10); color: var(--green-lt); border-color: rgba(22, 163, 74, 0.30); }
+.review-chip.revise  { background: rgba(245, 158, 11, 0.10); color: var(--amber); border-color: rgba(245, 158, 11, 0.30); }
+.review-chip.reject  { background: rgba(239, 68, 68, 0.10); color: var(--red); border-color: rgba(239, 68, 68, 0.30); }
+.review-agents details { border: 1px solid var(--border); border-radius: 5px; padding: 10px 14px; margin-bottom: 8px; background: var(--surface); }
+.review-agents details > summary { cursor: pointer; font-family: var(--mono); font-size: 13px; color: var(--text); list-style: none; }
+.review-agents details > summary::-webkit-details-marker { display: none; }
+.review-agents details > summary::before { content: '▸'; margin-right: 8px; color: var(--muted); transition: transform 0.15s; display: inline-block; }
+.review-agents details[open] > summary::before { transform: rotate(90deg); }
+.review-grid { margin-top: 12px; width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+.review-grid th, .review-grid td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--border); }
+.review-grid th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.review-grid td.score-num { color: var(--green-lt); }
+.review-grid td.score-null { color: var(--muted); }
+.review-note { color: var(--muted); font-size: 11px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 footer {
   padding: 24px 40px; border-top: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
@@ -210,7 +256,67 @@ const FOOTER = `
   </ul>
 </footer>`;
 
-export function renderServerDetail(server: ServerRow): string {
+// Sanity Panel review block — aggregated headline + per-agent <details> drill-in.
+// Spec: outputs/2026-05-11-claude-toolidx-multi-agent-review-surface-plan-v5.md §3.5
+// Empty-state: returns "" so the block is omitted entirely from the DOM.
+function renderReviewSection(evals: EvalsBundle | null): string {
+	if (!evals || !evals.aggregate) return "";
+	const { aggregate, rows } = evals;
+
+	// Group rows by agent for the drill-in.
+	const byAgent = new Map<string, EvalRowForRender[]>();
+	for (const r of rows) {
+		const arr = byAgent.get(r.agent) ?? [];
+		arr.push(r);
+		byAgent.set(r.agent, arr);
+	}
+	const agentKeys = Array.from(byAgent.keys()).sort();
+
+	const verdictChips =
+		`<span class="review-chip approve">${aggregate.verdict_split.approve} approve</span>` +
+		`<span class="review-chip revise">${aggregate.verdict_split.revise} revise</span>` +
+		`<span class="review-chip reject">${aggregate.verdict_split.reject} reject</span>`;
+
+	const agentBlocks = agentKeys.map(agent => {
+		const agentRows = (byAgent.get(agent) ?? []).slice().sort((a, b) => {
+			if (a.pass !== b.pass) return a.pass - b.pass;
+			return a.lens.localeCompare(b.lens);
+		});
+		const firstRow = agentRows[0];
+		const model = firstRow?.model ?? "";
+		const rowsHtml = agentRows.map(r => {
+			const scoreCell = typeof r.score === "number"
+				? `<td class="score-num">${r.score.toFixed(1)}</td>`
+				: `<td class="score-null">—</td>`;
+			const verdictCell = r.verdict ? esc(r.verdict) : "—";
+			const noteCell = r.notes ? `<td class="review-note" title="${esc(r.notes)}">${esc(truncate(r.notes, 80))}</td>` : `<td class="review-note">—</td>`;
+			return `<tr><td>${r.pass}</td><td>${esc(r.lens)}</td>${scoreCell}<td>${verdictCell}</td>${noteCell}</tr>`;
+		}).join("");
+		return `<details>
+      <summary>agent ${esc(agent)}${model ? ` <span class="meta">· ${esc(model)}</span>` : ""}</summary>
+      <table class="review-grid">
+        <thead><tr><th>pass</th><th>lens</th><th>score</th><th>verdict</th><th>notes</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </details>`;
+	}).join("\n");
+
+	return `<section id="evals-block">
+    <h2>5-agent Sanity Panel review</h2>
+    <div class="review-headline">
+      <span class="review-mean">${aggregate.mean_score.toFixed(1)}<span class="label">mean (pass 3)</span></span>
+      <div class="review-meta">
+        <span>spread: ${aggregate.score_spread.toFixed(1)}</span>
+        <span>·</span>
+        <span>${aggregate.agent_count} agent${aggregate.agent_count === 1 ? "" : "s"}</span>
+      </div>
+      <div class="review-meta">${verdictChips}</div>
+    </div>
+    <div class="review-agents">${agentBlocks}</div>
+  </section>`;
+}
+
+export function renderServerDetail(server: ServerRow, evals: EvalsBundle | null = null): string {
 	const id = String(server.id ?? "");
 	const name = String(server.name ?? id);
 	const description = (server.description as string | null) ?? "";
@@ -309,10 +415,15 @@ export function renderServerDetail(server: ServerRow): string {
   </section>`
 		: "";
 
+	const reviewSection = renderReviewSection(evals);
+
 	const linksList: string[] = [];
 	if (repoLink) linksList.push(`<li><a href="${esc(repoLink)}" rel="nofollow noopener" target="_blank">Repository ↗</a></li>`);
 	linksList.push(`<li><a href="/v1/servers/${encodeURIComponent(id)}">JSON record</a> <span class="meta">(API)</span></li>`);
 	linksList.push(`<li><a href="/v1/servers/${encodeURIComponent(id)}/tools">Tool schemas</a> <span class="meta">(API)</span></li>`);
+	if (evals && evals.aggregate) {
+		linksList.push(`<li><a href="/v1/servers/${encodeURIComponent(id)}/evals">Panel evals</a> <span class="meta">(API)</span></li>`);
+	}
 
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -357,6 +468,7 @@ ${NAV}
   ${installSection}
   ${capabilitiesSection}
   ${instructionsSection}
+  ${reviewSection}
   <section id="links">
     <h2>Links</h2>
     <ul class="links-list">

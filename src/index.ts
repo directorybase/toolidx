@@ -9,6 +9,7 @@ import { ServerQcUpdate } from "./endpoints/servers/serverQcUpdate";
 import { ServerUpdate } from "./endpoints/servers/serverUpdate";
 import { ServerTools } from "./endpoints/servers/serverTools";
 import { ServerQcTools } from "./endpoints/servers/serverQcTools";
+import { ServerEvals } from "./endpoints/servers/serverEvals";
 import { ToolsSearch } from "./endpoints/tools/toolsSearch";
 import { ToolTestArgs } from "./endpoints/tools/toolTestArgs";
 import { QcArchive } from "./endpoints/servers/qcArchive";
@@ -142,13 +143,57 @@ app.get("/server/:id", async (c) => {
 			headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
 		});
 	}
-	return new Response(renderServerDetail(server), {
+	// Sanity Panel evals — fetch alongside server row, pass to renderer.
+	// Spec: outputs/2026-05-11-claude-toolidx-multi-agent-review-surface-plan-v5.md §3.5
+	const evalsRes = await c.env.DB.prepare(
+		`SELECT agent, model, lens, pass, score, verdict, notes, created_at
+		 FROM evals WHERE server_id = ?
+		 ORDER BY agent, lens, pass`
+	).bind(id).all<{
+		agent: string; model: string; lens: string; pass: number;
+		score: number | null; verdict: string | null; notes: string | null; created_at: string;
+	}>();
+	const evalsBundle = buildEvalsBundle(evalsRes.results ?? []);
+	return new Response(renderServerDetail(server, evalsBundle), {
 		headers: {
 			"Content-Type": "text/html; charset=utf-8",
 			"Cache-Control": "public, max-age=0, must-revalidate",
 		},
 	});
 });
+
+// Build the evals bundle (rows + aggregate) for the renderer. Same aggregation
+// shape as /v1/servers/:id/evals (§3.4); kept inline here to avoid a second
+// D1 round-trip from inside the renderer.
+function buildEvalsBundle(rows: Array<{
+	agent: string; model: string; lens: string; pass: number;
+	score: number | null; verdict: string | null; notes: string | null; created_at: string;
+}>) {
+	if (rows.length === 0) return null;
+	const pass3 = rows.filter(r => r.pass === 3);
+	if (pass3.length === 0) return { rows, aggregate: null as any };
+	const scored = pass3.filter(r => typeof r.score === "number") as Array<{ score: number; agent: string; verdict: string | null }>;
+	if (scored.length === 0) return { rows, aggregate: null as any };
+	const scores = scored.map(r => r.score);
+	const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+	const min = Math.min(...scores);
+	const max = Math.max(...scores);
+	const agents = new Set(pass3.map(r => r.agent));
+	const verdict_split = { approve: 0, revise: 0, reject: 0 };
+	for (const r of pass3) {
+		if (r.verdict === "approve" || r.verdict === "revise" || r.verdict === "reject") {
+			verdict_split[r.verdict]++;
+		}
+	}
+	const aggregate = {
+		agent_count: agents.size,
+		pass: 3,
+		mean_score: Math.round(mean * 100) / 100,
+		score_spread: Math.round((max - min) * 100) / 100,
+		verdict_split,
+	};
+	return { rows, aggregate };
+}
 
 app.get("/llms.txt", async (c) => {
 	const [countRow, metaRow] = await Promise.all([
@@ -300,6 +345,7 @@ openapi.patch("/v1/servers/:id", ServerUpdate);
 openapi.patch("/v1/servers/:id/qc", ServerQcUpdate);
 openapi.get("/v1/servers/:id/tools", ServerTools);
 openapi.get("/v1/servers/:id/qc_tools", ServerQcTools);
+openapi.get("/v1/servers/:id/evals", ServerEvals);
 openapi.get("/v1/tools", ToolsSearch);
 openapi.patch("/v1/tools/test_args", ToolTestArgs);
 openapi.post("/internal/qc-archive", QcArchive);
