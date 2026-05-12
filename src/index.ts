@@ -13,6 +13,7 @@ import { ToolsSearch } from "./endpoints/tools/toolsSearch";
 import { ToolTestArgs } from "./endpoints/tools/toolTestArgs";
 import { QcArchive } from "./endpoints/servers/qcArchive";
 import { SanityIngest } from "./endpoints/internal/sanityIngest";
+import { runSanityBridge, type BridgeMode } from "./lib/sanityBridge";
 import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
 import { renderServerDetail, renderServerNotFound } from "./pages/serverDetail";
@@ -304,4 +305,14 @@ openapi.patch("/v1/tools/test_args", ToolTestArgs);
 openapi.post("/internal/qc-archive", QcArchive);
 openapi.post("/internal/sanity-ingest", SanityIngest);
 
-export default app;
+// Default export wraps Hono's fetch alongside a scheduled() handler for the
+// Cloudflare Cron Trigger that drives the Sanity Panel bridge (v5 §3.3).
+// BRIDGE_MODE defaults to "dry-run" — no D1 writes until operator flips to "live".
+export default {
+	fetch: app.fetch.bind(app),
+	async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+		const raw = (env.BRIDGE_MODE ?? "dry-run").toLowerCase();
+		const mode: BridgeMode = raw === "live" ? "live" : "dry-run";
+		ctx.waitUntil(runSanityBridge(env, { mode }));
+	},
+};
