@@ -56,7 +56,10 @@ export interface BridgeResult {
 	rollups_refreshed: number;
 }
 
-const LENSES = ["accuracy", "specificity", "actionability", "trust", "completeness"] as const;
+// Lens vocabulary aligned to v6 §3.7 + crosscheck_agent.py + the operator-reviewed
+// preview-review-block.html. v5 shipped a placeholder enum; v6 makes the names
+// load-bearing because composite selection keys off lens identity.
+const LENSES = ["practical-implementation", "completeness", "use-case-fit", "accuracy", "authority"] as const;
 const AGENTS = ["a", "b", "c", "d", "e"] as const;
 const PASSES = [1, 2, 3] as const;
 
@@ -73,18 +76,20 @@ interface NormalizedRow {
 	score: number | null;
 	verdict: "approve" | "revise" | "reject" | null;
 	notes: string | null;
+	description: string | null;
 	created_at: string;
 }
 
 const UPSERT_SQL = `
-	INSERT INTO evals (server_id, agent, model, lens, pass, score, verdict, notes, created_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO evals (server_id, agent, model, lens, pass, score, verdict, notes, description, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT (server_id, agent, lens, pass) DO UPDATE SET
-		model      = excluded.model,
-		score      = excluded.score,
-		verdict    = excluded.verdict,
-		notes      = excluded.notes,
-		created_at = excluded.created_at
+		model       = excluded.model,
+		score       = excluded.score,
+		verdict     = excluded.verdict,
+		notes       = excluded.notes,
+		description = excluded.description,
+		created_at  = excluded.created_at
 `;
 
 /** Public entry point — called by scheduled() handler. */
@@ -155,6 +160,20 @@ export async function runSanityBridge(
 	if (mode === "dry-run") {
 		// Log a small sample for operator inspection.
 		console.log("sanity-bridge: DRY-RUN sample (first 3):", JSON.stringify(allRows.slice(0, 3), null, 2));
+		// v6: surface one description sample per encountered (agent, pass) tuple so
+		// operator can verify description capture before flipping to live mode.
+		const seen = new Set<string>();
+		const descSamples: Array<Pick<NormalizedRow, "agent" | "pass" | "lens" | "description">> = [];
+		for (const r of allRows) {
+			const k = `${r.agent}/${r.pass}`;
+			if (seen.has(k)) continue;
+			seen.add(k);
+			descSamples.push({ agent: r.agent, pass: r.pass, lens: r.lens, description: r.description });
+		}
+		console.log(
+			"sanity-bridge: DRY-RUN description samples per (agent, pass):",
+			JSON.stringify(descSamples, null, 2),
+		);
 		return result;
 	}
 
@@ -172,6 +191,7 @@ export async function runSanityBridge(
 					r.score,
 					r.verdict,
 					r.notes,
+					r.description,
 					r.created_at,
 				).run();
 				result.evals_rows_upserted++;
@@ -283,10 +303,21 @@ async function fetchJobJson(
  * v5 §1) — the normalizer is best-effort and tolerant. It walks the document
  * looking for per-agent, per-lens, per-pass entries with score/verdict/notes.
  *
+ * v6: each row also captures `description` per (agent, pass). Pass-1 typically
+ * carries the blind first-write description; Pass-2 typically carries cross-
+ * review notes only; Pass-3 typically carries the final-informed description.
+ * When the source has no description string for an entry, the row gets
+ * description=null and is ineligible as a composite-source candidate (§3.7).
+ *
  * Tries these shapes (in order):
- *   A. status.passes[pass].agents[agent].lenses[lens] = { score, verdict, notes, model, created_at }
- *   B. status[agent].passes[pass].lenses[lens] = { score, verdict, notes, model, created_at }
- *   C. status.results[*] = { agent, pass, lens, score, verdict, notes, model, created_at }
+ *   A. status.passes[pass].agents[agent].lenses[lens] = { score, verdict, notes, description, model, created_at }
+ *   B. status[agent].passes[pass].lenses[lens] = { score, verdict, notes, description, model, created_at }
+ *   C. status.results[*] = { agent, pass, lens, score, verdict, notes, description, model, created_at }
+ *
+ * Each shape handler also looks one level up for a shape-level `description`
+ * (e.g. agent-pass-level rather than lens-level) since some pass-emitters
+ * record one description per (agent, pass) rather than one per (agent, pass, lens).
+ * The lens-level value wins when both present.
  *
  * If none match, returns []. The dry-run mode is the place to discover the
  * real shape — logs will show empty normalizer output for jobs that don't fit.
@@ -327,6 +358,9 @@ export function normalizeStatus(serverId: string, status: unknown): NormalizedRo
 				if (!lenses || typeof lenses !== "object") continue;
 				const model = (lensBlock as Record<string, unknown>)?.model;
 				const created_at = (lensBlock as Record<string, unknown>)?.created_at;
+				// Pass-emitters may record one description per (agent, pass)
+				// at the agent-pass-block level rather than per lens.
+				const agentPassDescription = (lensBlock as Record<string, unknown>)?.description;
 				for (const lensKey of Object.keys(lenses as Record<string, unknown>)) {
 					const lens = coerceLens(lensKey);
 					if (!lens) continue;
@@ -342,6 +376,7 @@ export function normalizeStatus(serverId: string, status: unknown): NormalizedRo
 						score: pickNullableNumber(c.score),
 						verdict: pickNullableVerdict(c.verdict),
 						notes: pickNullableString(c.notes, 4000),
+						description: pickNullableString(c.description ?? agentPassDescription, 8000),
 						created_at: pickString(c.created_at, created_at, fallbackTs),
 					});
 				}
@@ -366,6 +401,9 @@ export function normalizeStatus(serverId: string, status: unknown): NormalizedRo
 			const lenses = (passBlock as Record<string, unknown> | undefined)?.lenses
 				?? passBlock;
 			if (!lenses || typeof lenses !== "object") continue;
+			// Per (agent, pass) block-level description (some emitters write one
+			// description per pass rather than per lens).
+			const agentPassDescription = (passBlock as Record<string, unknown> | undefined)?.description;
 			for (const lensKey of Object.keys(lenses as Record<string, unknown>)) {
 				const lens = coerceLens(lensKey);
 				if (!lens) continue;
@@ -381,6 +419,7 @@ export function normalizeStatus(serverId: string, status: unknown): NormalizedRo
 					score: pickNullableNumber(c.score),
 					verdict: pickNullableVerdict(c.verdict),
 					notes: pickNullableString(c.notes, 4000),
+					description: pickNullableString(c.description ?? agentPassDescription, 8000),
 					created_at: pickString(c.created_at, fallbackTs),
 				});
 			}
@@ -452,6 +491,7 @@ function coerceResultEntry(serverId: string, raw: unknown, fallbackTs: string): 
 		score: pickNullableNumber(r.score),
 		verdict: pickNullableVerdict(r.verdict),
 		notes: pickNullableString(r.notes, 4000),
+		description: pickNullableString(r.description, 8000),
 		created_at: pickString(r.created_at, fallbackTs),
 	};
 }

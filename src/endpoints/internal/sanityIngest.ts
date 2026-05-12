@@ -29,15 +29,18 @@ import type { AppContext } from "../../types";
 import { requireAuth } from "../../middleware/auth";
 import { refreshRollups } from "../../lib/rollup";
 
+// Lens vocabulary aligned to v6 §3.7 (composite primary-lens chain). Names are
+// load-bearing: composite selection keys off these literals.
 const EvalRowSchema = z.object({
 	server_id: z.string().min(1),
 	agent: z.enum(["a", "b", "c", "d", "e"]),
 	model: z.string().min(1),
-	lens: z.enum(["accuracy", "specificity", "actionability", "trust", "completeness"]),
+	lens: z.enum(["practical-implementation", "completeness", "use-case-fit", "accuracy", "authority"]),
 	pass: z.union([z.literal(1), z.literal(2), z.literal(3)]),
 	score: z.number().min(0).max(10).nullable(),
 	verdict: z.enum(["approve", "revise", "reject"]).nullable(),
 	notes: z.string().max(4000).nullable(),
+	description: z.string().max(8000).nullable().optional(),
 	created_at: z.string().datetime(),
 });
 
@@ -49,14 +52,15 @@ const IngestPayloadSchema = z.object({
 type EvalRow = z.infer<typeof EvalRowSchema>;
 
 const UPSERT_SQL = `
-	INSERT INTO evals (server_id, agent, model, lens, pass, score, verdict, notes, created_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO evals (server_id, agent, model, lens, pass, score, verdict, notes, description, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT (server_id, agent, lens, pass) DO UPDATE SET
-		model      = excluded.model,
-		score      = excluded.score,
-		verdict    = excluded.verdict,
-		notes      = excluded.notes,
-		created_at = excluded.created_at
+		model       = excluded.model,
+		score       = excluded.score,
+		verdict     = excluded.verdict,
+		notes       = excluded.notes,
+		description = excluded.description,
+		created_at  = excluded.created_at
 `;
 
 export class SanityIngest extends OpenAPIRoute {
@@ -147,6 +151,7 @@ export class SanityIngest extends OpenAPIRoute {
 						r.score,
 						r.verdict,
 						r.notes,
+						r.description ?? null,
 						r.created_at,
 					).run();
 					accepted.push(r.server_id);
