@@ -17,24 +17,22 @@ export type EvalRowForRender = {
 	model: string;
 	lens: string;
 	pass: number;
-	score: number | null;
-	verdict: string | null;
 	notes: string | null;
 	description: string | null;
 	created_at: string;
 };
 
-export type EvalsAggregate = {
-	agent_count: number;
-	pass: number;
-	mean_score: number;
-	score_spread: number;
-	verdict_split: { approve: number; revise: number; reject: number };
+// v11 §4: coverage replaces the score/verdict aggregate (the panel emits
+// neither). agents_total is the literal 5-agent panel size.
+export type EvalsCoverage = {
+	agents_with_pass3: number;
+	agents_total: number;
+	passes_present: number[];
 };
 
 export type EvalsBundle = {
 	rows: EvalRowForRender[];
-	aggregate: EvalsAggregate;
+	coverage: EvalsCoverage;
 };
 
 // HTML-escape for attribute/text contexts ONLY. Never use for JSON-LD <script> bodies.
@@ -189,48 +187,33 @@ pre {
 .links-list a { color: var(--green-lt); text-decoration: none; }
 .links-list a:hover { text-decoration: underline; }
 .instructions { color: var(--text); white-space: pre-wrap; max-width: 760px; }
-/* Composite meta block (v6 §3.5 Delta 2) — sits between page summary and status-row.
-   Surfaces consensus badge + dissent disclosure ABOVE the fold. */
-.composite-meta-block { background: rgba(74, 222, 128, 0.04); border: 1px solid rgba(74, 222, 128, 0.20); border-left: 3px solid var(--green-lt); border-radius: 5px; padding: 14px 18px; margin-bottom: 20px; }
-.composite-meta-line { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-family: var(--mono); font-size: 11px; color: var(--muted); }
-.consensus-badge { display: inline-block; padding: 3px 10px; border-radius: 3px; border: 1px solid; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
-.consensus-high      { background: rgba(22, 163, 74, 0.10); color: var(--green-lt); border-color: rgba(22, 163, 74, 0.30); }
-.consensus-mixed     { background: rgba(245, 158, 11, 0.10); color: var(--amber);    border-color: rgba(245, 158, 11, 0.30); }
-.consensus-contested { background: rgba(239, 68, 68, 0.10);  color: var(--red);      border-color: rgba(239, 68, 68, 0.30); }
-.composite-source { color: var(--muted); }
-.composite-source strong { color: var(--text); font-weight: 600; }
+/* Composite provenance line (v11 §3.5) — sits between page summary and
+   status-row. One plain attribution line. No consensus badge, no concerns
+   disclosure (the panel emits no score/verdict — those surfaces are deleted). */
+.composite-meta-block { background: rgba(74, 222, 128, 0.04); border: 1px solid rgba(74, 222, 128, 0.20); border-left: 3px solid var(--green-lt); border-radius: 5px; padding: 12px 18px; margin-bottom: 20px; }
+.composite-provenance { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.composite-provenance strong { color: var(--text); font-weight: 600; }
 .composite-model { color: var(--green-lt); font-family: var(--mono); }
-.composite-concerns { margin-top: 10px; }
-.composite-concerns summary { cursor: pointer; font-family: var(--mono); font-size: 11px; color: var(--muted); list-style: none; }
-.composite-concerns summary::-webkit-details-marker { display: none; }
-.composite-concerns summary::before { content: '⚠ '; color: var(--amber); }
-.composite-concerns ul { list-style: none; margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
-.composite-concerns li { padding: 4px 0; border-top: 1px solid var(--border); }
-.composite-concerns li:first-child { border-top: none; }
-.composite-concerns .concern-agent { color: var(--red); font-weight: 600; }
-.composite-concerns .concern-lens { color: var(--text); }
-/* Sanity Panel review block (v5 §3.5; refactored v6 §3.5 Delta 3) */
-.review-headline { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 16px; }
-.review-mean { font-family: var(--mono); font-size: 28px; font-weight: 700; color: var(--green-lt); letter-spacing: -0.02em; }
-.review-mean .label { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
-.review-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.review-chip { display: inline-block; padding: 3px 8px; border-radius: 3px; border: 1px solid var(--border); font-family: var(--mono); font-size: 11px; font-weight: 500; }
-.review-chip.approve { background: rgba(22, 163, 74, 0.10); color: var(--green-lt); border-color: rgba(22, 163, 74, 0.30); }
-.review-chip.revise  { background: rgba(245, 158, 11, 0.10); color: var(--amber); border-color: rgba(245, 158, 11, 0.30); }
-.review-chip.reject  { background: rgba(239, 68, 68, 0.10); color: var(--red); border-color: rgba(239, 68, 68, 0.30); }
+/* Sanity Panel review block (v11 §3.5) — coverage line + per-agent <details>.
+   Per-agent body = Pass-3 description; a blind→informed evolution disclosure
+   when both a Pass-1 and a Pass-3 row exist for that (server, agent). */
+.review-headline { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.review-coverage { color: var(--text); font-weight: 600; }
 .review-agents details { border: 1px solid var(--border); border-radius: 5px; padding: 10px 14px; margin-bottom: 8px; background: var(--surface); }
 .review-agents details > summary { cursor: pointer; font-family: var(--mono); font-size: 13px; color: var(--text); list-style: none; }
 .review-agents details > summary::-webkit-details-marker { display: none; }
 .review-agents details > summary::before { content: '▸'; margin-right: 8px; color: var(--muted); transition: transform 0.15s; display: inline-block; }
 .review-agents details[open] > summary::before { transform: rotate(90deg); }
-.review-grid { margin-top: 12px; width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
-.review-grid th, .review-grid td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--border); }
-.review-grid th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
-.review-grid td.score-num { color: var(--green-lt); }
-.review-grid td.score-null { color: var(--muted); }
-/* v6: per-pass finding renders untruncated — these ARE the insights agents read. */
-.review-finding { color: var(--text); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-width: 620px; }
-.review-verdict { color: var(--muted); white-space: nowrap; }
+/* Per-pass description renders untruncated — these ARE the insights agents read. */
+.review-finding { color: var(--text); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-width: 620px; margin-top: 10px; }
+.desc-evolution { margin-top: 10px; }
+.desc-evolution > summary { cursor: pointer; font-family: var(--mono); font-size: 11px; color: var(--muted); list-style: none; }
+.desc-evolution > summary::-webkit-details-marker { display: none; }
+.desc-evolution > summary::before { content: '↳ '; color: var(--muted); }
+.desc-evolution .desc-pass1, .desc-evolution .desc-pass3 { margin-top: 8px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-width: 620px; }
+.desc-evolution .desc-pass1 { color: var(--muted); }
+.desc-evolution .desc-pass3 { color: var(--text); }
+.desc-evolution .desc-label { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); display: block; margin-top: 8px; }
 footer {
   padding: 24px 40px; border-top: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
@@ -282,21 +265,22 @@ const FOOTER = `
   </ul>
 </footer>`;
 
-// Sanity Panel review block — aggregated headline + per-agent <details> drill-in.
-// Spec: outputs/2026-05-12-claude-toolidx-multi-agent-review-surface-plan-v6.md §3.5
-// v6 changes vs v5:
-//   - h2 renamed: "5-agent Sanity Panel — per-lens findings"
-//   - Per-agent <details> summary line includes the lens (one agent owns one lens)
-//   - Per-agent grid columns: pass | finding | verdict (lens + score columns dropped)
-//   - finding column = notes, rendered untruncated
-//   - No per-agent description blocks (descriptions are surfaced via composite
-//     at the top of the page and via the API)
-//   - No standalone composite callout block here — composite lives in the
-//     composite-meta block rendered above the status-row.
-// Empty-state: returns "" so the block is omitted entirely from the DOM.
+// Sanity Panel review block — coverage line + per-agent <details> drill-in.
+// Spec: outputs/2026-05-15-claude-toolidx-multi-agent-review-surface-plan-v11.md §3.5
+// v11 (the panel emits no score/verdict at any pass — verified live):
+//   - No mean/spread/verdict headline. A coverage line states how much of the
+//     5-agent panel landed (agents_with_pass3 / 5 · passes present).
+//   - Per-agent <details>: body = Pass-3 description (Pass-1 if no Pass-3).
+//   - When BOTH a Pass-1 and a Pass-3 row exist for that (server, agent), a
+//     <details class="desc-evolution"> blind→informed disclosure shows the
+//     Pass-1 row's description (.desc-pass1) and the Pass-3 row's (.desc-pass3).
+//     .desc-pass1 is sourced from the Pass-1 evals row — the row model's single
+//     source of truth — never pass3.json.pass1_description.
+//   - No score/verdict columns anywhere.
+// Empty-state: agents_with_pass3 === 0 → "" so the block is omitted from the DOM.
 function renderReviewSection(evals: EvalsBundle | null): string {
-	if (!evals || !evals.aggregate) return "";
-	const { aggregate, rows } = evals;
+	if (!evals || evals.coverage.agents_with_pass3 === 0) return "";
+	const { coverage, rows } = evals;
 
 	// Group rows by agent for the drill-in.
 	const byAgent = new Map<string, EvalRowForRender[]>();
@@ -307,28 +291,38 @@ function renderReviewSection(evals: EvalsBundle | null): string {
 	}
 	const agentKeys = Array.from(byAgent.keys()).sort();
 
-	const verdictChips =
-		`<span class="review-chip approve">${aggregate.verdict_split.approve} approve</span>` +
-		`<span class="review-chip revise">${aggregate.verdict_split.revise} revise</span>` +
-		`<span class="review-chip reject">${aggregate.verdict_split.reject} reject</span>`;
+	const passesLabel = coverage.passes_present.length
+		? `passes ${coverage.passes_present.join(", ")}`
+		: "no passes";
 
 	const agentBlocks = agentKeys.map(agent => {
-		const agentRows = (byAgent.get(agent) ?? []).slice().sort((a, b) => {
-			return a.pass - b.pass;
-		});
-		const firstRow = agentRows[0];
-		const model = firstRow?.model ?? "";
-		// One agent owns one lens — surface it in the summary line (not the grid).
-		const lens = firstRow?.lens ?? "";
-		const rowsHtml = agentRows.map(r => {
-			const findingCell = r.notes
-				? `<td class="review-finding">${esc(r.notes)}</td>`
-				: `<td class="review-finding">—</td>`;
-			const verdictCell = r.verdict
-				? `<td class="review-verdict">${esc(r.verdict)}</td>`
-				: `<td class="review-verdict">—</td>`;
-			return `<tr><td>${r.pass}</td>${findingCell}${verdictCell}</tr>`;
-		}).join("");
+		const agentRows = byAgent.get(agent) ?? [];
+		const pass1 = agentRows.find(r => r.pass === 1) ?? null;
+		const pass3 = agentRows.find(r => r.pass === 3) ?? null;
+		const primary = pass3 ?? pass1;
+		const model = primary?.model ?? "";
+		// One agent owns one lens — surface it in the summary line.
+		const lens = primary?.lens ?? "";
+		const primaryDesc = (primary?.description ?? "").trim();
+		const bodyHtml = primaryDesc
+			? `<div class="review-finding">${esc(primaryDesc)}</div>`
+			: `<div class="review-finding">—</div>`;
+
+		// Blind→informed evolution: only when BOTH a Pass-1 AND a Pass-3 row
+		// exist for this (server, agent). .desc-pass1 = the Pass-1 row's own
+		// description (single source of truth, v11 §3.5).
+		const p1Desc = (pass1?.description ?? "").trim();
+		const p3Desc = (pass3?.description ?? "").trim();
+		const evolutionHtml = pass1 && pass3
+			? `<details class="desc-evolution">
+        <summary>blind → informed</summary>
+        <span class="desc-label">pass 1 — blind</span>
+        <div class="desc-pass1">${esc(p1Desc || "—")}</div>
+        <span class="desc-label">pass 3 — informed</span>
+        <div class="desc-pass3">${esc(p3Desc || "—")}</div>
+      </details>`
+			: "";
+
 		const summaryParts = [
 			`agent ${esc(agent)}`,
 			model ? `<span class="meta">· ${esc(model)}</span>` : "",
@@ -336,65 +330,38 @@ function renderReviewSection(evals: EvalsBundle | null): string {
 		].filter(Boolean).join(" ");
 		return `<details>
       <summary>${summaryParts}</summary>
-      <table class="review-grid">
-        <thead><tr><th>pass</th><th>finding</th><th>verdict</th></tr></thead>
-        <tbody>${rowsHtml}</tbody>
-      </table>
+      ${bodyHtml}
+      ${evolutionHtml}
     </details>`;
 	}).join("\n");
 
 	return `<section id="evals-block">
     <h2>5-agent Sanity Panel — per-lens findings</h2>
     <div class="review-headline">
-      <span class="review-mean">${aggregate.mean_score.toFixed(1)}<span class="label">mean (pass 3)</span></span>
-      <div class="review-meta">
-        <span>spread: ${aggregate.score_spread.toFixed(1)}</span>
-        <span>·</span>
-        <span>${aggregate.agent_count} agent${aggregate.agent_count === 1 ? "" : "s"}</span>
-      </div>
-      <div class="review-meta">${verdictChips}</div>
+      <span class="review-coverage">${coverage.agents_with_pass3} of ${coverage.agents_total} agents</span>
+      <span>·</span>
+      <span>${passesLabel}</span>
     </div>
     <div class="review-agents">${agentBlocks}</div>
   </section>`;
 }
 
-// v6 §3.5 Delta 2: composite-meta block sits between page summary and status-row.
-// Renders only when composite has a non-null consensus tag (or when sourced from
-// operator-curated override — in which case we still show the meta line).
+// Composite provenance line (v11 §3.5) — sits between page summary and
+// status-row. One plain attribution line, rendered whenever a composite is
+// present. NO consensus badge, NO concerns disclosure (the panel emits no
+// score/verdict — those surfaces are deleted).
 function renderCompositeMeta(composite: Composite | null): string {
 	if (!composite) return "";
 	const isOverride = composite.source.agent === "operator";
-	if (!isOverride && composite.consensus === null) return "";
 
-	const sourceLine = isOverride
-		? `<span class="composite-source">generated by <strong>operator-curated</strong></span>`
-		: `<span class="composite-source">generated by <strong>agent ${esc(composite.source.agent)}</strong>${
+	const provenance = isOverride
+		? `<span class="composite-provenance">generated by <strong>operator-curated</strong></span>`
+		: `<span class="composite-provenance">generated by <strong>agent ${esc(composite.source.agent)}</strong> · ${esc(composite.source.lens)} lens${
 			composite.source.model ? ` · <span class="composite-model">${esc(composite.source.model)}</span>` : ""
-		}${
-			composite.source.pass != null ? ` · pass ${composite.source.pass}` : ""
-		} · ${esc(composite.source.lens)} lens${
-			typeof composite.source.score === "number" ? ` · score ${composite.source.score.toFixed(1)}` : ""
 		}</span>`;
 
-	const consensusBadge = composite.consensus !== null
-		? `<span class="consensus-badge consensus-${esc(composite.consensus)}">${esc(composite.consensus)}</span>`
-		: "";
-
-	const concernsBlock = composite.concerns.length > 0
-		? `<details class="composite-concerns">
-        <summary>${composite.concerns.length} dissent flagged — read before relying on this composite</summary>
-        <ul>${composite.concerns.map(c =>
-			`<li><span class="concern-agent">agent ${esc(c.agent)}</span> · <span class="concern-lens">${esc(c.lens)}</span> · <strong>${esc(c.verdict)}</strong>${c.note_excerpt ? ` — ${esc(c.note_excerpt)}` : ""}</li>`
-		).join("")}</ul>
-      </details>`
-		: "";
-
 	return `<div class="composite-meta-block">
-    <div class="composite-meta-line">
-      ${consensusBadge}
-      ${sourceLine}
-    </div>
-    ${concernsBlock}
+    ${provenance}
   </div>`;
 }
 
@@ -517,7 +484,7 @@ export function renderServerDetail(
 	if (repoLink) linksList.push(`<li><a href="${esc(repoLink)}" rel="nofollow noopener" target="_blank">Repository ↗</a></li>`);
 	linksList.push(`<li><a href="/v1/servers/${encodeURIComponent(id)}">JSON record</a> <span class="meta">(API)</span></li>`);
 	linksList.push(`<li><a href="/v1/servers/${encodeURIComponent(id)}/tools">Tool schemas</a> <span class="meta">(API)</span></li>`);
-	if (evals && evals.aggregate) {
+	if (evals && evals.coverage.agents_with_pass3 >= 1) {
 		linksList.push(`<li><a href="/v1/servers/${encodeURIComponent(id)}/evals">Panel evals</a> <span class="meta">(API)</span></li>`);
 	}
 

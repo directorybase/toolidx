@@ -4,7 +4,7 @@ export function renderLlmsTxt(serverCount: number, lastUpdated: string): string 
 
 > Independent verification and directory service for MCP servers and AI tools. Machine-readable status, evaluation scores, and structured metadata.
 
-toolidx indexes and verifies MCP (Model Context Protocol) servers. Each listing includes a verified description, install command, tool schemas from live QC testing, and multi-model evaluation scores. All data is queryable via REST API.
+toolidx indexes and verifies MCP (Model Context Protocol) servers. Each listing includes a verified description, install command, tool schemas from live QC testing, and a description peer-reviewed by a 5-agent panel. All data is queryable via REST API.
 
 ## Quick Start for Agents
 

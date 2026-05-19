@@ -189,7 +189,7 @@ function renderCard(server: ServerRow): string {
 export function renderCategoryDetail(category: Category, servers: ServerRow[]): string {
 	const canonical = `https://toolidx.dev/category/${encodeURIComponent(category.slug)}`;
 	const title = `${category.displayName} MCP servers — toolidx`;
-	const metaDescription = `${category.tagline} ${servers.length} verified MCP servers in this category, scored on install, runtime, and tool safety.`;
+	const metaDescription = `${category.tagline} ${servers.length} verified MCP servers in this category, peer-reviewed by a 5-agent panel.`;
 
 	const breadcrumbLd = {
 		"@context": "https://schema.org",

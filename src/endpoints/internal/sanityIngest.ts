@@ -29,16 +29,18 @@ import type { AppContext } from "../../types";
 import { requireAuth } from "../../middleware/auth";
 import { refreshRollups } from "../../lib/rollup";
 
-// Lens vocabulary aligned to v6 §3.7 (composite primary-lens chain). Names are
-// load-bearing: composite selection keys off these literals.
+// Lens vocabulary aligned to AGENT_TO_LENS (composite primary-lens chain).
+// Names are load-bearing: composite selection keys off these literals.
+// v11: pass ∈ {1,3} only — pass-2 files are reviewer→reviewee cross-reviews,
+// out of scope (v11 §8 Q1); an out-of-band pass-2 POST must 4xx, not create
+// an un-modelled (server_id,agent,lens,2) row. score/verdict removed: the
+// panel emits neither (verified 2026-05-15); columns dropped by migration 0015.
 const EvalRowSchema = z.object({
 	server_id: z.string().min(1),
 	agent: z.enum(["a", "b", "c", "d", "e"]),
 	model: z.string().min(1),
 	lens: z.enum(["practical-implementation", "completeness", "use-case-fit", "accuracy", "authority"]),
-	pass: z.union([z.literal(1), z.literal(2), z.literal(3)]),
-	score: z.number().min(0).max(10).nullable(),
-	verdict: z.enum(["approve", "revise", "reject"]).nullable(),
+	pass: z.union([z.literal(1), z.literal(3)]),
 	notes: z.string().max(4000).nullable(),
 	description: z.string().max(8000).nullable().optional(),
 	created_at: z.string().datetime(),
@@ -52,12 +54,10 @@ const IngestPayloadSchema = z.object({
 type EvalRow = z.infer<typeof EvalRowSchema>;
 
 const UPSERT_SQL = `
-	INSERT INTO evals (server_id, agent, model, lens, pass, score, verdict, notes, description, created_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO evals (server_id, agent, model, lens, pass, notes, description, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT (server_id, agent, lens, pass) DO UPDATE SET
 		model       = excluded.model,
-		score       = excluded.score,
-		verdict     = excluded.verdict,
 		notes       = excluded.notes,
 		description = excluded.description,
 		created_at  = excluded.created_at
@@ -97,7 +97,6 @@ export class SanityIngest extends OpenAPIRoute {
 								})),
 								batch_size: z.number().int(),
 								mode: z.string(),
-								rollup_updated_for: z.array(z.string()),
 							}),
 						}),
 					},
@@ -131,7 +130,6 @@ export class SanityIngest extends OpenAPIRoute {
 					rejected_other: [],
 					batch_size: rows.length,
 					mode,
-					rollup_updated_for: [],
 				},
 			});
 		}
@@ -148,8 +146,6 @@ export class SanityIngest extends OpenAPIRoute {
 						r.model,
 						r.lens,
 						r.pass,
-						r.score,
-						r.verdict,
 						r.notes,
 						r.description ?? null,
 						r.created_at,
@@ -194,7 +190,6 @@ export class SanityIngest extends OpenAPIRoute {
 				rejected_other,
 				batch_size: rows.length,
 				mode,
-				rollup_updated_for: distinctAccepted,
 			},
 		});
 	}

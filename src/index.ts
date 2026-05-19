@@ -147,13 +147,12 @@ app.get("/server/:id", async (c) => {
 	// Sanity Panel evals — fetch alongside server row, pass to renderer.
 	// Spec: outputs/2026-05-12-claude-toolidx-multi-agent-review-surface-plan-v6.md §3.4 + §3.5
 	const evalsRes = await c.env.DB.prepare(
-		`SELECT agent, model, lens, pass, score, verdict, notes, description, created_at
+		`SELECT agent, model, lens, pass, notes, description, created_at
 		 FROM evals WHERE server_id = ?
 		 ORDER BY agent, lens, pass`
 	).bind(id).all<{
 		agent: string; model: string; lens: string; pass: number;
-		score: number | null; verdict: string | null; notes: string | null;
-		description: string | null; created_at: string;
+		notes: string | null; description: string | null; created_at: string;
 	}>();
 	const evalsRows = evalsRes.results ?? [];
 	const evalsBundle = buildEvalsBundle(evalsRows);
@@ -171,37 +170,23 @@ app.get("/server/:id", async (c) => {
 	});
 });
 
-// Build the evals bundle (rows + aggregate) for the renderer. Same aggregation
-// shape as /v1/servers/:id/evals (§3.4); kept inline here to avoid a second
-// D1 round-trip from inside the renderer.
+// Build the evals bundle (rows + coverage) for the renderer. Same coverage
+// shape as /v1/servers/:id/evals (v11 §4); kept inline here to avoid a second
+// D1 round-trip from inside the renderer. v11: the panel emits no score/verdict
+// so there is no mean/spread/verdict aggregate — coverage replaces it.
 function buildEvalsBundle(rows: Array<{
 	agent: string; model: string; lens: string; pass: number;
-	score: number | null; verdict: string | null; notes: string | null; created_at: string;
+	notes: string | null; description: string | null; created_at: string;
 }>) {
 	if (rows.length === 0) return null;
-	const pass3 = rows.filter(r => r.pass === 3);
-	if (pass3.length === 0) return { rows, aggregate: null as any };
-	const scored = pass3.filter(r => typeof r.score === "number") as Array<{ score: number; agent: string; verdict: string | null }>;
-	if (scored.length === 0) return { rows, aggregate: null as any };
-	const scores = scored.map(r => r.score);
-	const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
-	const min = Math.min(...scores);
-	const max = Math.max(...scores);
-	const agents = new Set(pass3.map(r => r.agent));
-	const verdict_split = { approve: 0, revise: 0, reject: 0 };
-	for (const r of pass3) {
-		if (r.verdict === "approve" || r.verdict === "revise" || r.verdict === "reject") {
-			verdict_split[r.verdict]++;
-		}
-	}
-	const aggregate = {
-		agent_count: agents.size,
-		pass: 3,
-		mean_score: Math.round(mean * 100) / 100,
-		score_spread: Math.round((max - min) * 100) / 100,
-		verdict_split,
+	const agentsWithPass3 = new Set(rows.filter(r => r.pass === 3).map(r => r.agent));
+	const passes = Array.from(new Set(rows.map(r => r.pass))).sort((a, b) => a - b);
+	const coverage = {
+		agents_with_pass3: agentsWithPass3.size,
+		agents_total: 5,
+		passes_present: passes,
 	};
-	return { rows, aggregate };
+	return { rows, coverage };
 }
 
 app.get("/llms.txt", async (c) => {
@@ -365,7 +350,16 @@ openapi.post("/internal/sanity-ingest", SanityIngest);
 // BRIDGE_MODE defaults to "dry-run" — no D1 writes until operator flips to "live".
 export default {
 	fetch: app.fetch.bind(app),
-	async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+	async scheduled(
+		_controller: ScheduledController,
+		// v11: type structurally against what the bridge needs. The
+		// wrangler-generated global `Env` lacks the BRIDGE_MODE var and is not
+		// assignable to the bridge's Bindings — the source of the 2 stale v6
+		// tsc errors here. Runtime passes the real bindings; structural typing
+		// is correct and precise.
+		env: { DB: D1Database; GITEA_TOKEN: string; BRIDGE_MODE?: string },
+		ctx: ExecutionContext,
+	) {
 		const raw = (env.BRIDGE_MODE ?? "dry-run").toLowerCase();
 		const mode: BridgeMode = raw === "live" ? "live" : "dry-run";
 		ctx.waitUntil(runSanityBridge(env, { mode }));
