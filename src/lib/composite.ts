@@ -25,6 +25,23 @@ export const LENS_PRIORITY = [
 	"authority",
 ] as const;
 
+/**
+ * Single source of truth: Sanity Panel agent letter → lens.
+ * Confirmed via crosscheck_agent.py AGENT_FOCUS (agenticwatch-workers, branch
+ * `master`): a→accuracy, b→use-case-fit, c→completeness,
+ * d→practical-implementation, e→authority. The pipeline emits NO lens field;
+ * lens is derived from agent identity only. Plan v11 §1/§2.
+ */
+export const AGENT_TO_LENS = {
+	a: "accuracy",
+	b: "use-case-fit",
+	c: "completeness",
+	d: "practical-implementation",
+	e: "authority",
+} as const;
+
+export type AgentLetter = keyof typeof AGENT_TO_LENS;
+
 export const MIN_SCORE = 5.0;
 
 export type EvalRowForComposite = {

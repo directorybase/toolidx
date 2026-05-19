@@ -1,26 +1,37 @@
 /**
  * Worker-native bridge from Gitea agenticwatch-jobs → toolidx evals.
  *
- * Spec: outputs/2026-05-11-claude-toolidx-multi-agent-review-surface-plan-v5.md §3.3
+ * Spec: outputs/2026-05-15-claude-toolidx-multi-agent-review-surface-plan-v11.md
+ *       §3.0 Phase 1, §3.1
  *
  * Invoked from the scheduled() handler in src/index.ts on a 15-minute cron.
  *
- * Algorithm:
+ * Algorithm (v11 — real file layout, verified live 2026-05-15):
  *   1. List job dirs via Gitea contents API (paginated).
  *   2. For each job: fetch describe.job.json → product_url → deriveServerId.
- *   3. Attempt crosscheck/status.json; skip 404s.
- *   4. Normalize to evals rows (agent × lens × pass).
- *   5. In live mode, UPSERT batches via DB binding; in dry-run mode, log only.
- *   6. After all batches, refresh rollups for distinct server_ids.
+ *   3. Fetch crosscheck/status.json — a COMPLETION LEDGER, used purely as a
+ *      fetch index (NOT a data source). Shape: { agent_a:{pass1:true,
+ *      pass3:true,…}, …, ready_to_publish, … }.
+ *   4. List crosscheck/ to enumerate agent_{a..e} dirs. For each agent:
+ *      fetch agent_{x}/pass1.json ALWAYS; fetch agent_{x}/pass3.json ONLY
+ *      when status.json agent_x.pass3 === true (skip the GET otherwise —
+ *      logged in dry-run for AC-BRIDGE).
+ *   5. Emit one evals row per (agent, lens, pass∈{1,3}). lens is derived
+ *      from agent letter via AGENT_TO_LENS (the pipeline emits no lens,
+ *      no score, no verdict at any pass — verified). description comes from
+ *      the pass file; created_at = the file's written_at.
+ *   6. In live mode, UPSERT batches via DB binding; in dry-run, log only.
+ *   7. After all batches, refresh rollups for distinct server_ids.
  *
- * Normalizer resilience: a job with a malformed status.json is logged and
- * skipped — the run continues. The status.json shape is best-effort: this
- * implementation tries several plausible field paths; gaps are surfaced in
- * dry-run mode logs before any live writes.
+ * status.json never yields a row — it is an index, not content. score /
+ * verdict are written NULL (columns dropped by migration 0015 in Phase 6;
+ * the bridge's column references are cleaned in Phase 4 alongside the
+ * refreshRollups call-site removal, per v11 §3.0 invariant B).
  */
 
 import { deriveServerId } from "./id";
 import { refreshRollups } from "./rollup";
+import { AGENT_TO_LENS, type AgentLetter } from "./composite";
 import {
 	GITEA_BASE,
 	GITEA_JOBS_OWNER,
@@ -38,8 +49,8 @@ export type BridgeMode = "live" | "dry-run";
 export interface BridgeOpts {
 	mode: BridgeMode;
 	// Hard cap on job dirs processed per invocation. Cloudflare scheduled handlers
-	// have a 30s CPU-time soft limit on the free tier (longer on paid); 300 jobs
-	// × 2 Gitea GETs each is well within budget but caps prevent runaway pages.
+	// have a 30s CPU-time soft limit on the free tier (longer on paid). v11 §3.1:
+	// ~6–11 Gitea GETs/job (1 status + 1 crosscheck listing + ≤5 pass1 + ≤5 pass3).
 	maxJobs?: number;
 }
 
@@ -56,26 +67,22 @@ export interface BridgeResult {
 	rollups_refreshed: number;
 }
 
-// Lens vocabulary aligned to v6 §3.7 + crosscheck_agent.py + the operator-reviewed
-// preview-review-block.html. v5 shipped a placeholder enum; v6 makes the names
-// load-bearing because composite selection keys off lens identity.
-const LENSES = ["practical-implementation", "completeness", "use-case-fit", "accuracy", "authority"] as const;
-const AGENTS = ["a", "b", "c", "d", "e"] as const;
-const PASSES = [1, 2, 3] as const;
-
-type Lens = (typeof LENSES)[number];
-type Agent = (typeof AGENTS)[number];
-type Pass = (typeof PASSES)[number];
+// Lens vocabulary is owned by AGENT_TO_LENS in composite.ts (single source of
+// truth, v11 §2). Agent letters are its keys. Pass is {1,3} only — pass-2
+// files are reviewer→reviewee cross-reviews, out of scope (v11 §8 Q1).
+const AGENT_LETTERS = Object.keys(AGENT_TO_LENS) as AgentLetter[];
+type Lens = (typeof AGENT_TO_LENS)[AgentLetter];
+type Pass = 1 | 3;
 
 interface NormalizedRow {
 	server_id: string;
-	agent: Agent;
+	agent: AgentLetter;
 	model: string;
 	lens: Lens;
 	pass: Pass;
-	score: number | null;
-	verdict: "approve" | "revise" | "reject" | null;
-	notes: string | null;
+	score: number | null; // always null in v11 (pipeline emits none; col dropped in Phase 6)
+	verdict: "approve" | "revise" | "reject" | null; // always null in v11
+	notes: string | null; // always null in v1 (pass-2 dropped, v11 §8 Q1)
 	description: string | null;
 	created_at: string;
 }
@@ -127,15 +134,13 @@ export async function runSanityBridge(
 		if (typeof productUrl !== "string" || productUrl.length === 0) continue;
 		const serverId = deriveServerId(productUrl);
 
-		// 3. crosscheck/status.json — the Sanity Panel output
+		// 3. crosscheck/status.json — COMPLETION LEDGER, used only as a fetch index.
 		const status = await fetchJobJson(env.GITEA_TOKEN, jobName, "crosscheck/status.json");
-		if (!status) continue;
-		result.jobs_with_status++;
 
-		// 4. Normalize
+		// 4 + 5. Walk agent_{x}/pass{1,3}.json and normalize.
 		let rows: NormalizedRow[];
 		try {
-			rows = normalizeStatus(serverId, status);
+			rows = await normalizeJob(env.GITEA_TOKEN, jobName, serverId, status, mode);
 		} catch (err) {
 			result.jobs_normalizer_failed++;
 			console.warn(
@@ -146,6 +151,7 @@ export async function runSanityBridge(
 		}
 
 		if (rows.length === 0) continue;
+		result.jobs_with_status++; // jobs that produced ≥1 row
 		allRows.push(...rows);
 		touchedServerIds.add(serverId);
 	}
@@ -153,15 +159,15 @@ export async function runSanityBridge(
 	result.evals_rows_total = allRows.length;
 	console.log(
 		`sanity-bridge: normalized ${allRows.length} rows across ${touchedServerIds.size} servers ` +
-		`(${result.jobs_with_status}/${result.jobs_listed} jobs had status.json, ` +
+		`(${result.jobs_with_status}/${result.jobs_listed} jobs produced rows, ` +
 		`${result.jobs_normalizer_failed} normalizer failures)`,
 	);
 
 	if (mode === "dry-run") {
-		// Log a small sample for operator inspection.
 		console.log("sanity-bridge: DRY-RUN sample (first 3):", JSON.stringify(allRows.slice(0, 3), null, 2));
-		// v6: surface one description sample per encountered (agent, pass) tuple so
-		// operator can verify description capture before flipping to live mode.
+		// AC-BRIDGE: surface one description sample per (agent, pass) tuple plus
+		// the derived lens so the operator can verify capture + lens mapping
+		// before flipping to live mode.
 		const seen = new Set<string>();
 		const descSamples: Array<Pick<NormalizedRow, "agent" | "pass" | "lens" | "description">> = [];
 		for (const r of allRows) {
@@ -171,13 +177,13 @@ export async function runSanityBridge(
 			descSamples.push({ agent: r.agent, pass: r.pass, lens: r.lens, description: r.description });
 		}
 		console.log(
-			"sanity-bridge: DRY-RUN description samples per (agent, pass):",
+			"sanity-bridge: DRY-RUN description samples per (agent, pass) [lens must match AGENT_TO_LENS]:",
 			JSON.stringify(descSamples, null, 2),
 		);
 		return result;
 	}
 
-	// 5. UPSERT in chunks of 100 via D1 binding.
+	// 6. UPSERT in chunks of 100 via D1 binding.
 	for (let i = 0; i < allRows.length; i += 100) {
 		const chunk = allRows.slice(i, i + 100);
 		for (const r of chunk) {
@@ -206,7 +212,7 @@ export async function runSanityBridge(
 		}
 	}
 
-	// 6. Refresh rollups for distinct touched servers.
+	// 7. Refresh rollups for distinct touched servers.
 	const idsArr = Array.from(touchedServerIds);
 	try {
 		await refreshRollups(env.DB, idsArr);
@@ -271,6 +277,25 @@ async function listJobDirs(token: string, maxJobs: number): Promise<string[]> {
 	return out;
 }
 
+/** List the crosscheck/ directory of a job → the agent_{a..e} subdir names present. */
+async function listCrosscheckAgentDirs(token: string, jobName: string): Promise<string[]> {
+	const url =
+		`${GITEA_BASE}/api/v1/repos/${GITEA_JOBS_OWNER}/${GITEA_JOBS_REPO}` +
+		`/contents/jobs/${encodeURIComponent(jobName)}/crosscheck?ref=${GITEA_JOBS_BRANCH}`;
+	const resp = await fetch(url, { headers: { Authorization: `token ${token}` } });
+	if (!resp.ok) {
+		if (resp.status !== 404) {
+			console.warn(`sanity-bridge: listCrosscheck ${jobName} HTTP ${resp.status}`);
+		}
+		return [];
+	}
+	const entries = await resp.json<GiteaContentEntry[]>();
+	if (!Array.isArray(entries)) return [];
+	return entries
+		.filter(e => e.type === "dir" && /^agent_[a-e]$/.test(e.name))
+		.map(e => e.name);
+}
+
 async function fetchJobJson(
 	token: string,
 	jobName: string,
@@ -297,159 +322,113 @@ async function fetchJobJson(
 }
 
 /**
- * Normalize a status.json into evals rows.
+ * Normalize one job's crosscheck/ tree into evals rows (v11 §3.1).
  *
- * The Sanity Panel's exact field shape is hypothesis-only at this point (per
- * v5 §1) — the normalizer is best-effort and tolerant. It walks the document
- * looking for per-agent, per-lens, per-pass entries with score/verdict/notes.
+ * Per agent_{x} dir present in crosscheck/:
+ *   - lens   = AGENT_TO_LENS[letter]   (the pipeline emits no lens)
+ *   - pass1  = fetched ALWAYS → one row, pass=1
+ *   - pass3  = fetched ONLY when status.json agent_x.pass3 === true → one
+ *              row, pass=3. When the flag is false/absent the GET is SKIPPED
+ *              and the skip is logged in dry-run (AC-BRIDGE fetch-skip proof).
  *
- * v6: each row also captures `description` per (agent, pass). Pass-1 typically
- * carries the blind first-write description; Pass-2 typically carries cross-
- * review notes only; Pass-3 typically carries the final-informed description.
- * When the source has no description string for an entry, the row gets
- * description=null and is ineligible as a composite-source candidate (§3.7).
+ * status.json itself yields zero rows — it is a completion ledger / index.
+ * score / verdict are always null (pipeline emits none). description and
+ * created_at(=written_at) come from the pass file.
  *
- * Tries these shapes (in order):
- *   A. status.passes[pass].agents[agent].lenses[lens] = { score, verdict, notes, description, model, created_at }
- *   B. status[agent].passes[pass].lenses[lens] = { score, verdict, notes, description, model, created_at }
- *   C. status.results[*] = { agent, pass, lens, score, verdict, notes, description, model, created_at }
- *
- * Each shape handler also looks one level up for a shape-level `description`
- * (e.g. agent-pass-level rather than lens-level) since some pass-emitters
- * record one description per (agent, pass) rather than one per (agent, pass, lens).
- * The lens-level value wins when both present.
- *
- * If none match, returns []. The dry-run mode is the place to discover the
- * real shape — logs will show empty normalizer output for jobs that don't fit.
+ * Halt signal (dry-run review, v11 §3.0): if status says pass3:true but the
+ * pass3.json GET 404s, a WARN is logged — the layout differs from §1 and the
+ * operator must NOT flip BRIDGE_MODE=live.
  */
-export function normalizeStatus(serverId: string, status: unknown): NormalizedRow[] {
-	if (!status || typeof status !== "object") return [];
-	const s = status as Record<string, unknown>;
+export async function normalizeJob(
+	token: string,
+	jobName: string,
+	serverId: string,
+	status: unknown,
+	mode: BridgeMode,
+): Promise<NormalizedRow[]> {
 	const out: NormalizedRow[] = [];
-
-	// Default created_at for rows missing one — bridge sees data when it sees it.
 	const fallbackTs = new Date().toISOString();
 
-	// Shape C: flat results array.
-	if (Array.isArray(s.results)) {
-		for (const raw of s.results) {
-			const row = coerceResultEntry(serverId, raw, fallbackTs);
-			if (row) out.push(row);
-		}
-		if (out.length > 0) return out;
-	}
+	const statusObj =
+		status && typeof status === "object" ? (status as Record<string, unknown>) : null;
 
-	// Shape A: passes → agents → lenses.
-	if (s.passes && typeof s.passes === "object") {
-		const passes = s.passes as Record<string, unknown>;
-		for (const passKey of Object.keys(passes)) {
-			const pass = coercePass(passKey);
-			if (pass === null) continue;
-			const agentsBlock = passes[passKey];
-			if (!agentsBlock || typeof agentsBlock !== "object") continue;
-			const agentsObj = (agentsBlock as Record<string, unknown>).agents ?? agentsBlock;
-			if (!agentsObj || typeof agentsObj !== "object") continue;
-			for (const agentKey of Object.keys(agentsObj as Record<string, unknown>)) {
-				const agent = coerceAgent(agentKey);
-				if (!agent) continue;
-				const lensBlock = (agentsObj as Record<string, unknown>)[agentKey];
-				const lenses = (lensBlock as Record<string, unknown> | undefined)?.lenses
-					?? lensBlock;
-				if (!lenses || typeof lenses !== "object") continue;
-				const model = (lensBlock as Record<string, unknown>)?.model;
-				const created_at = (lensBlock as Record<string, unknown>)?.created_at;
-				// Pass-emitters may record one description per (agent, pass)
-				// at the agent-pass-block level rather than per lens.
-				const agentPassDescription = (lensBlock as Record<string, unknown>)?.description;
-				for (const lensKey of Object.keys(lenses as Record<string, unknown>)) {
-					const lens = coerceLens(lensKey);
-					if (!lens) continue;
-					const cell = (lenses as Record<string, unknown>)[lensKey];
-					if (!cell || typeof cell !== "object") continue;
-					const c = cell as Record<string, unknown>;
-					out.push({
-						server_id: serverId,
-						agent,
-						model: pickString(c.model, model, "unknown"),
-						lens,
-						pass,
-						score: pickNullableNumber(c.score),
-						verdict: pickNullableVerdict(c.verdict),
-						notes: pickNullableString(c.notes, 4000),
-						description: pickNullableString(c.description ?? agentPassDescription, 8000),
-						created_at: pickString(c.created_at, created_at, fallbackTs),
-					});
-				}
-			}
-		}
-		if (out.length > 0) return out;
-	}
+	const agentDirs = await listCrosscheckAgentDirs(token, jobName);
+	if (agentDirs.length === 0) return out;
 
-	// Shape B: per-agent top-level.
-	for (const agentKey of Object.keys(s)) {
-		const agent = coerceAgent(agentKey);
-		if (!agent) continue;
-		const agentBlock = s[agentKey];
-		if (!agentBlock || typeof agentBlock !== "object") continue;
-		const passes = (agentBlock as Record<string, unknown>).passes;
-		if (!passes || typeof passes !== "object") continue;
-		const agentModel = (agentBlock as Record<string, unknown>).model;
-		for (const passKey of Object.keys(passes as Record<string, unknown>)) {
-			const pass = coercePass(passKey);
-			if (pass === null) continue;
-			const passBlock = (passes as Record<string, unknown>)[passKey];
-			const lenses = (passBlock as Record<string, unknown> | undefined)?.lenses
-				?? passBlock;
-			if (!lenses || typeof lenses !== "object") continue;
-			// Per (agent, pass) block-level description (some emitters write one
-			// description per pass rather than per lens).
-			const agentPassDescription = (passBlock as Record<string, unknown> | undefined)?.description;
-			for (const lensKey of Object.keys(lenses as Record<string, unknown>)) {
-				const lens = coerceLens(lensKey);
-				if (!lens) continue;
-				const cell = (lenses as Record<string, unknown>)[lensKey];
-				if (!cell || typeof cell !== "object") continue;
-				const c = cell as Record<string, unknown>;
-				out.push({
-					server_id: serverId,
-					agent,
-					model: pickString(c.model, agentModel, "unknown"),
-					lens,
-					pass,
-					score: pickNullableNumber(c.score),
-					verdict: pickNullableVerdict(c.verdict),
-					notes: pickNullableString(c.notes, 4000),
-					description: pickNullableString(c.description ?? agentPassDescription, 8000),
-					created_at: pickString(c.created_at, fallbackTs),
-				});
+	for (const dir of agentDirs) {
+		const letter = dir.replace(/^agent_/, "") as AgentLetter;
+		const lens = AGENT_TO_LENS[letter];
+		if (!lens) continue; // dir name not in the a–e map; skip defensively
+
+		// pass1.json — always fetched.
+		const p1 = await fetchJobJson(token, jobName, `crosscheck/${dir}/pass1.json`);
+		const r1 = coercePassFile(serverId, letter, lens, 1, p1, fallbackTs);
+		if (r1) out.push(r1);
+
+		// pass3.json — gated on the status.json completion flag.
+		const agentLedger =
+			statusObj && typeof statusObj[`agent_${letter}`] === "object"
+				? (statusObj[`agent_${letter}`] as Record<string, unknown>)
+				: null;
+		const pass3Done = agentLedger?.pass3 === true;
+
+		if (!pass3Done) {
+			if (mode === "dry-run") {
+				console.log(
+					`sanity-bridge: job=${jobName} agent=${letter} pass3 SKIPPED ` +
+					`(status.agent_${letter}.pass3=${agentLedger ? "false" : "absent"}) — no GET issued`,
+				);
 			}
+			continue;
 		}
+
+		const p3 = await fetchJobJson(token, jobName, `crosscheck/${dir}/pass3.json`);
+		if (p3 === null) {
+			// status said pass3:true but the file is missing → layout mismatch.
+			console.warn(
+				`sanity-bridge: HALT-SIGNAL job=${jobName} agent=${letter} — ` +
+				`status.pass3=true but crosscheck/${dir}/pass3.json is absent; ` +
+				`layout differs from v11 §1 (do NOT flip BRIDGE_MODE=live)`,
+			);
+			continue;
+		}
+		const r3 = coercePassFile(serverId, letter, lens, 3, p3, fallbackTs);
+		if (r3) out.push(r3);
 	}
 
 	return out;
 }
 
-// ── coercers ─────────────────────────────────────────────────────────────
-
-function coerceAgent(v: unknown): Agent | null {
-	if (typeof v !== "string") return null;
-	const lower = v.toLowerCase();
-	if ((AGENTS as readonly string[]).includes(lower)) return lower as Agent;
-	return null;
+/**
+ * One pass{1,3}.json → one NormalizedRow. The file shape (verified live):
+ * { listing_id, agent_id, pass, focus, model, description, written_at[,
+ *   pass1_description, critiques_received] }. No score/verdict/lens.
+ */
+function coercePassFile(
+	serverId: string,
+	letter: AgentLetter,
+	lens: Lens,
+	pass: Pass,
+	raw: unknown,
+	fallbackTs: string,
+): NormalizedRow | null {
+	if (!raw || typeof raw !== "object") return null;
+	const r = raw as Record<string, unknown>;
+	return {
+		server_id: serverId,
+		agent: letter,
+		model: pickString(r.model, "unknown"),
+		lens,
+		pass,
+		score: null,
+		verdict: null,
+		notes: null,
+		description: pickNullableString(r.description, 8000),
+		created_at: pickString(r.written_at, fallbackTs),
+	};
 }
 
-function coerceLens(v: unknown): Lens | null {
-	if (typeof v !== "string") return null;
-	const lower = v.toLowerCase();
-	if ((LENSES as readonly string[]).includes(lower)) return lower as Lens;
-	return null;
-}
-
-function coercePass(v: unknown): Pass | null {
-	const n = typeof v === "number" ? v : parseInt(String(v).replace(/^pass[_-]?/i, ""), 10);
-	if (n === 1 || n === 2 || n === 3) return n;
-	return null;
-}
+// ── pickers ──────────────────────────────────────────────────────────────
 
 function pickString(...candidates: unknown[]): string {
 	for (const c of candidates) {
@@ -458,40 +437,7 @@ function pickString(...candidates: unknown[]): string {
 	return "";
 }
 
-function pickNullableNumber(v: unknown): number | null {
-	if (typeof v === "number" && !Number.isNaN(v)) return Math.max(0, Math.min(10, v));
-	return null;
-}
-
-function pickNullableVerdict(v: unknown): "approve" | "revise" | "reject" | null {
-	if (typeof v !== "string") return null;
-	const lower = v.toLowerCase();
-	if (lower === "approve" || lower === "revise" || lower === "reject") return lower;
-	return null;
-}
-
 function pickNullableString(v: unknown, max: number): string | null {
 	if (typeof v !== "string") return null;
 	return v.slice(0, max);
-}
-
-function coerceResultEntry(serverId: string, raw: unknown, fallbackTs: string): NormalizedRow | null {
-	if (!raw || typeof raw !== "object") return null;
-	const r = raw as Record<string, unknown>;
-	const agent = coerceAgent(r.agent);
-	const lens = coerceLens(r.lens);
-	const pass = coercePass(r.pass);
-	if (!agent || !lens || pass === null) return null;
-	return {
-		server_id: serverId,
-		agent,
-		model: pickString(r.model, "unknown"),
-		lens,
-		pass,
-		score: pickNullableNumber(r.score),
-		verdict: pickNullableVerdict(r.verdict),
-		notes: pickNullableString(r.notes, 4000),
-		description: pickNullableString(r.description, 8000),
-		created_at: pickString(r.created_at, fallbackTs),
-	};
 }
