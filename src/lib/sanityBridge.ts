@@ -21,16 +21,14 @@
  *      no score, no verdict at any pass — verified). description comes from
  *      the pass file; created_at = the file's written_at.
  *   6. In live mode, UPSERT batches via DB binding; in dry-run, log only.
- *   7. After all batches, refresh rollups for distinct server_ids.
  *
- * status.json never yields a row — it is an index, not content. score /
- * verdict are written NULL (columns dropped by migration 0015 in Phase 6;
- * the bridge's column references are cleaned in Phase 4 alongside the
- * refreshRollups call-site removal, per v11 §3.0 invariant B).
+ * status.json never yields a row — it is an index, not content. The bridge
+ * writes no score/verdict: the pipeline emits neither, the columns are dropped
+ * by migration 0015, and the score-mean refresh that consumed them was deleted
+ * (it had no inputs), per v11 §3.0 invariant B.
  */
 
 import { deriveServerId } from "./id";
-import { refreshRollups } from "./rollup";
 import { AGENT_TO_LENS, type AgentLetter } from "./composite";
 import {
 	GITEA_BASE,
@@ -64,13 +62,11 @@ export interface BridgeResult {
 	evals_rows_upserted: number;
 	evals_rows_orphaned: number;
 	server_ids_touched: number;
-	rollups_refreshed: number;
 }
 
 // Lens vocabulary is owned by AGENT_TO_LENS in composite.ts (single source of
 // truth, v11 §2). Agent letters are its keys. Pass is {1,3} only — pass-2
 // files are reviewer→reviewee cross-reviews, out of scope (v11 §8 Q1).
-const AGENT_LETTERS = Object.keys(AGENT_TO_LENS) as AgentLetter[];
 type Lens = (typeof AGENT_TO_LENS)[AgentLetter];
 type Pass = 1 | 3;
 
@@ -80,21 +76,19 @@ interface NormalizedRow {
 	model: string;
 	lens: Lens;
 	pass: Pass;
-	score: number | null; // always null in v11 (pipeline emits none; col dropped in Phase 6)
-	verdict: "approve" | "revise" | "reject" | null; // always null in v11
-	notes: string | null; // always null in v1 (pass-2 dropped, v11 §8 Q1)
 	description: string | null;
 	created_at: string;
 }
 
+// v11: the panel emits no score/verdict (columns dropped by migration 0015)
+// and no notes in v1 (pass-2 cross-reviews dropped, §8 Q1). The bridge writes
+// only the columns it has real data for; score/verdict/notes default NULL
+// while the columns still exist (pre-0015) and are gone after.
 const UPSERT_SQL = `
-	INSERT INTO evals (server_id, agent, model, lens, pass, score, verdict, notes, description, created_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO evals (server_id, agent, model, lens, pass, description, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT (server_id, agent, lens, pass) DO UPDATE SET
 		model       = excluded.model,
-		score       = excluded.score,
-		verdict     = excluded.verdict,
-		notes       = excluded.notes,
 		description = excluded.description,
 		created_at  = excluded.created_at
 `;
@@ -194,9 +188,6 @@ export async function runSanityBridge(
 					r.model,
 					r.lens,
 					r.pass,
-					r.score,
-					r.verdict,
-					r.notes,
 					r.description,
 					r.created_at,
 				).run();
@@ -212,22 +203,11 @@ export async function runSanityBridge(
 		}
 	}
 
-	// 7. Refresh rollups for distinct touched servers.
-	const idsArr = Array.from(touchedServerIds);
-	try {
-		await refreshRollups(env.DB, idsArr);
-		result.rollups_refreshed = idsArr.length;
-	} catch (err) {
-		console.error(
-			"sanity-bridge: refreshRollups failed:",
-			err instanceof Error ? err.message : String(err),
-		);
-	}
-	result.server_ids_touched = idsArr.length;
+	result.server_ids_touched = touchedServerIds.size;
 
 	console.log(
 		`sanity-bridge: done — upserted=${result.evals_rows_upserted} ` +
-		`orphans=${result.evals_rows_orphaned} rollups=${result.rollups_refreshed}`,
+		`orphans=${result.evals_rows_orphaned} servers=${result.server_ids_touched}`,
 	);
 	return result;
 }
@@ -243,7 +223,6 @@ function zeroResult(mode: BridgeMode): BridgeResult {
 		evals_rows_upserted: 0,
 		evals_rows_orphaned: 0,
 		server_ids_touched: 0,
-		rollups_refreshed: 0,
 	};
 }
 
@@ -420,9 +399,6 @@ function coercePassFile(
 		model: pickString(r.model, "unknown"),
 		lens,
 		pass,
-		score: null,
-		verdict: null,
-		notes: null,
 		description: pickNullableString(r.description, 8000),
 		created_at: pickString(r.written_at, fallbackTs),
 	};

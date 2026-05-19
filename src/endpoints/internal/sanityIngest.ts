@@ -15,9 +15,9 @@
  * first FK rejection, which contradicts the per-row surfacing contract.
  *
  * Modes:
- *   "live"     — UPSERT + refresh rollups (default).
+ *   "live"     — UPSERT (default).
  *   "backfill" — same as live; logged as backfill for operator triage.
- *   "dry-run"  — zod + bucketing only; no D1 writes, no rollup refresh.
+ *   "dry-run"  — zod + bucketing only; no D1 writes.
  *
  * The Cloudflare cron handler in src/lib/sanityBridge.ts writes via the DB
  * binding directly and does NOT call this endpoint.
@@ -27,7 +27,6 @@ import { OpenAPIRoute } from "chanfana";
 import { z } from "zod";
 import type { AppContext } from "../../types";
 import { requireAuth } from "../../middleware/auth";
-import { refreshRollups } from "../../lib/rollup";
 
 // Lens vocabulary aligned to AGENT_TO_LENS (composite primary-lens chain).
 // Names are load-bearing: composite selection keys off these literals.
@@ -115,7 +114,7 @@ export class SanityIngest extends OpenAPIRoute {
 		const data = await this.getValidatedData<typeof this.schema>();
 		const { rows, mode } = data.body;
 
-		const accepted: string[] = []; // server_ids that landed (for rollup)
+		const accepted: string[] = []; // server_ids that landed
 		const rejected_orphans: string[] = [];
 		const rejected_other: { row_index: number; error: string }[] = [];
 
@@ -165,19 +164,6 @@ export class SanityIngest extends OpenAPIRoute {
 			return c.json(
 				{ success: false, errors: [{ code: 503, message: `D1 unavailable: ${msg.slice(0, 500)}` }] },
 				503,
-			);
-		}
-
-		// Refresh rollups for distinct accepted server_ids.
-		const distinctAccepted = Array.from(new Set(accepted));
-		try {
-			await refreshRollups(c.env.DB, distinctAccepted);
-		} catch (rollupErr) {
-			// Rollup failure does NOT fail the ingest — evals rows are already in.
-			// Log and continue. The next batch will refresh again.
-			console.error(
-				"sanity-ingest: refreshRollups failed",
-				rollupErr instanceof Error ? rollupErr.message : String(rollupErr),
 			);
 		}
 
