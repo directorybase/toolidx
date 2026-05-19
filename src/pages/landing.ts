@@ -344,6 +344,7 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
 
 <footer>
   <span>toolidx.dev — independent MCP verification</span>
+  <span>© 2026 Gregory D. Collins</span>
   <ul class="footer-links">
     <li><a href="/docs">API Docs</a></li>
     <li><a href="/openapi.json">OpenAPI</a></li>
