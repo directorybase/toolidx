@@ -7,7 +7,9 @@
  * Invoked from the scheduled() handler in src/index.ts on a 15-minute cron.
  *
  * Algorithm (v11 — real file layout, verified live 2026-05-15):
- *   1. List job dirs via Gitea contents API (paginated).
+ *   1. List job dirs via Gitea Git Trees API (branch → root tree → jobs subtree).
+ *      The contents API on `jobs/` enriches each of ~300+ entries with last-commit
+ *      metadata and times out through the Cloudflare Tunnel; trees API does not.
  *   2. For each job: fetch describe.job.json → product_url → deriveServerId.
  *   3. Fetch crosscheck/status.json — a COMPLETION LEDGER, used purely as a
  *      fetch index (NOT a data source). Shape: { agent_a:{pass1:true,
@@ -231,26 +233,108 @@ interface GiteaContentEntry {
 	type: "file" | "dir" | "symlink";
 }
 
+interface GiteaTreeEntry {
+	path: string;
+	type: "blob" | "tree" | "commit";
+	sha: string;
+}
+interface GiteaTreePage {
+	tree?: GiteaTreeEntry[];
+	truncated?: boolean;
+	total_count?: number;
+}
+
+/**
+ * List job dir names under `jobs/` via Git Trees API.
+ *
+ * Why not /contents/jobs? Gitea's contents API enriches each entry with last-commit
+ * info, which serializes ~300+ entries and times out at >110s through the Cloudflare
+ * Tunnel (verified 2026-05-30). Trees API returns raw {path,type,sha} entries with
+ * no enrichment — fast even for large dirs.
+ *
+ * Three calls per refresh: branch HEAD → root tree → jobs subtree.
+ */
 async function listJobDirs(token: string, maxJobs: number): Promise<string[]> {
-	const out: string[] = [];
+	const headers = { Authorization: `token ${token}` };
+
+	// 1. Branch HEAD → commit SHA.
+	const branchUrl =
+		`${GITEA_BASE}/api/v1/repos/${GITEA_JOBS_OWNER}/${GITEA_JOBS_REPO}` +
+		`/branches/${GITEA_JOBS_BRANCH}`;
+	const branchResp = await fetch(branchUrl, { headers });
+	if (!branchResp.ok) {
+		console.warn(`sanity-bridge: listJobDirs branches HTTP ${branchResp.status}`);
+		return [];
+	}
+	const branchBody = await branchResp.json<{ commit?: { id?: string } }>();
+	const commitSha = branchBody?.commit?.id;
+	if (!commitSha) {
+		console.warn(`sanity-bridge: listJobDirs missing commit.id`);
+		return [];
+	}
+
+	// 2. Root tree → find `jobs` subtree SHA. Gitea resolves commit SHA → root tree.
+	const jobsSha = await findSubtreeSha(token, commitSha, "jobs");
+	if (!jobsSha) {
+		console.warn(`sanity-bridge: listJobDirs jobs subtree not found`);
+		return [];
+	}
+
+	// 3. jobs/ subtree → directory entries (no per-entry enrichment).
+	return await listSubtreeDirs(token, jobsSha, maxJobs);
+}
+
+async function findSubtreeSha(
+	token: string,
+	treeSha: string,
+	name: string,
+): Promise<string | null> {
 	let page = 1;
-	const limit = 50;
-	while (out.length < maxJobs) {
+	const PER_PAGE = 1000;
+	while (page <= 20) {
 		const url =
 			`${GITEA_BASE}/api/v1/repos/${GITEA_JOBS_OWNER}/${GITEA_JOBS_REPO}` +
-			`/contents/jobs?ref=${GITEA_JOBS_BRANCH}&page=${page}&limit=${limit}`;
+			`/git/trees/${treeSha}?page=${page}&per_page=${PER_PAGE}`;
 		const resp = await fetch(url, { headers: { Authorization: `token ${token}` } });
 		if (!resp.ok) {
-			console.warn(`sanity-bridge: listJobDirs page=${page} HTTP ${resp.status}`);
+			console.warn(`sanity-bridge: findSubtreeSha page=${page} HTTP ${resp.status}`);
+			return null;
+		}
+		const body = await resp.json<GiteaTreePage>();
+		const entries = body?.tree ?? [];
+		const hit = entries.find(e => e.path === name && e.type === "tree");
+		if (hit) return hit.sha;
+		if (entries.length === 0 || !body?.truncated) return null;
+		page++;
+	}
+	return null;
+}
+
+async function listSubtreeDirs(
+	token: string,
+	treeSha: string,
+	maxJobs: number,
+): Promise<string[]> {
+	const out: string[] = [];
+	let page = 1;
+	const PER_PAGE = 1000;
+	while (out.length < maxJobs && page <= 20) {
+		const url =
+			`${GITEA_BASE}/api/v1/repos/${GITEA_JOBS_OWNER}/${GITEA_JOBS_REPO}` +
+			`/git/trees/${treeSha}?page=${page}&per_page=${PER_PAGE}`;
+		const resp = await fetch(url, { headers: { Authorization: `token ${token}` } });
+		if (!resp.ok) {
+			console.warn(`sanity-bridge: listSubtreeDirs page=${page} HTTP ${resp.status}`);
 			break;
 		}
-		const entries = await resp.json<GiteaContentEntry[]>();
-		if (!Array.isArray(entries) || entries.length === 0) break;
+		const body = await resp.json<GiteaTreePage>();
+		const entries = body?.tree ?? [];
+		if (entries.length === 0) break;
 		for (const e of entries) {
-			if (e.type === "dir") out.push(e.name);
+			if (e.type === "tree") out.push(e.path);
 			if (out.length >= maxJobs) break;
 		}
-		if (entries.length < limit) break; // last page
+		if (!body?.truncated) break;
 		page++;
 	}
 	return out;

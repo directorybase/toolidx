@@ -1,11 +1,15 @@
 // Shared Gitea base URL + repo identifiers for Worker-side fetches.
-// Spec: outputs/2026-05-11-claude-toolidx-multi-agent-review-surface-plan-v5.md §3.3
 //
-// IMPORTANT: this is a LAN IP, not Tailscale. Cloudflare Workers fetch() runs in
-// CF's network and does NOT have a Tailscale stack — the operator's Tailscale-only
-// rule applies to workstation-side targeting, not Worker fetch. qc-archive
-// (src/endpoints/servers/qcArchive.ts) ships against this same URL today.
-export const GITEA_BASE = "http://192.168.7.70:30008";
+// Cloudflare Workers fetch() runs at the edge and CANNOT reach lab IPs (LAN
+// 192.168.x or Tailscale 100.x — both non-routable from CF's network). The
+// only reachable path is the public Cloudflare Tunnel hostname.
+//
+// Tunnel caveat (verified 2026-05-30): authed light calls return fast
+// (`/branches/{name}` ~0.4s) but Gitea's `/contents/{dir}` API enriches each
+// entry with last-commit metadata, which times out at >110s for `jobs/` (318
+// entries). For heavy directory listings, use `/git/trees/{sha}` instead
+// (no per-entry enrichment). See sanityBridge.ts listJobDirs.
+export const GITEA_BASE = "https://gitea.agenticwatch.dev";
 
 // agenticwatch-results: where the QC archive writes final-pass run docs.
 export const GITEA_RESULTS_OWNER = "gitea_admin";
