@@ -34,8 +34,7 @@ Every response includes \`last_updated\` (ISO 8601 UTC) at the top level so agen
 - \`tool_schemas\` — array of tool definitions from live QC install test
 - \`tool_count\` — number of tools the server exposes
 - \`qc_status\` — pending | passed | failed | error | skipped
-- \`quality_score\` — weighted eval score 0–10 (Accuracy 30%, Specificity 25%, Actionability 20%, Trust 15%, Completeness 10%)
-- \`sanity_score\` — multi-model consensus score 0–10
+- \`quality_score\`, \`sanity_score\` — retired in v11; retained as nullable fields for backward compatibility and currently always null. For verification signal use \`qc_status\` plus the per-server evals coverage at GET /v1/servers/{id}/evals
 - \`status\` — active | pending | rejected
 
 ## Verification Pipeline

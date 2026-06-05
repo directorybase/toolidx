@@ -20,6 +20,8 @@ import { renderLanding } from "./pages/landing";
 import { renderLlmsTxt } from "./pages/llmstxt";
 import { renderServerDetail, renderServerNotFound } from "./pages/serverDetail";
 import { renderCategoryDetail, renderCategoryNotFound } from "./pages/categoryDetail";
+import { renderServerMarkdown, renderCategoryMarkdown } from "./pages/markdown";
+import { SEARCH_SKILL_MD, buildAgentSkillsIndex } from "./pages/agentSkills";
 import { CATEGORIES, categoryBySlug, classify } from "./lib/category";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -38,11 +40,21 @@ app.onError((err, c) => {
 	);
 });
 
+// New /.well-known/ JSON routes whose bodies must stay schema-clean (no
+// last_updated injection). EXPLICIT allow-list — NOT a "/.well-known/" prefix
+// match — so the pre-existing /.well-known/mcp.json route keeps its current
+// behavior (it still gets last_updated). See agent-ready plan v5 §0a.
+const CLEAN_JSON_PATHS = new Set<string>([
+	"/.well-known/agent-skills/index.json",
+]);
+
 // Inject last_updated into every JSON response.
 // - API endpoints: top-level field for agent consumption
 // - OpenAPI spec (/openapi.json): injected into info.description for SwaggerUI heading
 app.use("*", async (c, next) => {
 	await next();
+
+	if (CLEAN_JSON_PATHS.has(new URL(c.req.url).pathname)) return;
 
 	const contentType = c.res.headers.get("content-type") ?? "";
 	if (!contentType.includes("application/json")) return;
@@ -66,6 +78,80 @@ app.use("*", async (c, next) => {
 		status: c.res.status,
 		headers: new Headers(c.res.headers),
 	});
+});
+
+// Link response headers (RFC 8288) — point agents to discovery resources.
+// Additive: native Response headers are immutable after next() (the reason the
+// last_updated middleware above rebuilds the Response), so re-wrap before
+// setting. Only IANA-registered relation types. HTML/text responses only — the
+// content-type guard keeps it off /v1/* JSON. See agent-ready plan v5 §1.
+const DISCOVERY_LINK = [
+	'</.well-known/api-catalog>; rel="api-catalog"',
+	'</openapi.json>; rel="service-desc"; type="application/json"',
+	'</docs>; rel="service-doc"',
+	'</llms.txt>; rel="alternate"; type="text/plain"',
+	'</sitemap.xml>; rel="sitemap"',
+].join(", ");
+
+app.use("*", async (c, next) => {
+	await next();
+	const ct = c.res.headers.get("content-type") ?? "";
+	if (!ct.includes("text/html") && !ct.includes("text/plain")) return;
+	if (c.res.headers.has("link")) return;
+	c.res = new Response(c.res.body, c.res); // re-wrap so headers are mutable
+	c.res.headers.set("Link", DISCOVERY_LINK);
+});
+
+// Markdown content negotiation (RFC-style Accept negotiation) — serve
+// text/markdown to agents that ask for it; HTML stays the default for browsers.
+// Additive: short-circuits BEFORE the HTML routes, never matches /v1/*, and
+// reads D1 itself so existing handlers are untouched. Vary: Accept keeps caches
+// from serving markdown to browsers. See agent-ready plan v5 §5.
+app.use("*", async (c, next) => {
+	if (!(c.req.header("accept") ?? "").includes("text/markdown")) return next();
+	const path = new URL(c.req.url).pathname;
+	const mdHeaders = {
+		"Content-Type": "text/markdown; charset=utf-8",
+		"Cache-Control": "no-store",
+		"Vary": "Accept",
+	};
+
+	if (path === "/") {
+		const [countRow, metaRow] = await Promise.all([
+			c.env.DB.prepare("SELECT COUNT(*) as count FROM servers WHERE status = 'active'").first<{ count: number }>(),
+			c.env.DB.prepare("SELECT value FROM metadata WHERE key = 'last_updated'").first<{ value: string }>(),
+		]);
+		return c.body(renderLlmsTxt(countRow?.count ?? 0, metaRow?.value ?? ""), 200, mdHeaders);
+	}
+
+	const serverMatch = path.match(/^\/server\/(.+)$/);
+	if (serverMatch) {
+		const id = decodeURIComponent(serverMatch[1]);
+		const server = await c.env.DB.prepare(
+			"SELECT * FROM servers WHERE id = ? AND status = 'active'"
+		).bind(id).first<Record<string, unknown>>();
+		if (server) return c.body(renderServerMarkdown(server), 200, mdHeaders);
+		return next(); // not found → fall through to the HTML 404
+	}
+
+	const categoryMatch = path.match(/^\/category\/(.+)$/);
+	if (categoryMatch) {
+		const slug = decodeURIComponent(categoryMatch[1]);
+		const category = categoryBySlug(slug);
+		if (category) {
+			const all = await c.env.DB.prepare(
+				`SELECT * FROM servers
+				 WHERE status = 'active'
+				   AND description IS NOT NULL AND length(description) >= 20
+				 ORDER BY qc_tested_at DESC NULLS LAST, updated_at DESC`
+			).all<Record<string, unknown>>();
+			const matching = (all.results ?? []).filter(r => classify(String(r.name ?? ""), String(r.description ?? "")).slug === slug);
+			return c.body(renderCategoryMarkdown(category, matching), 200, mdHeaders);
+		}
+		return next();
+	}
+
+	return next();
 });
 
 const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
@@ -310,7 +396,12 @@ ${all.map(u => `  <url>
 
 app.get("/robots.txt", (c) =>
 	new Response(
-		"User-agent: *\nAllow: /\nDisallow: /v1/\n\nSitemap: https://toolidx.dev/sitemap.xml\n",
+		"# Content usage preferences — https://contentsignals.org\n" +
+		"User-agent: *\n" +
+		"Content-Signal: search=yes, ai-input=yes, ai-train=yes\n" +
+		"Allow: /\n" +
+		"Disallow: /v1/\n\n" +
+		"Sitemap: https://toolidx.dev/sitemap.xml\n",
 		{
 			headers: {
 				"Content-Type": "text/plain; charset=utf-8",
@@ -318,6 +409,45 @@ app.get("/robots.txt", (c) =>
 			},
 		}
 	)
+);
+
+// API Catalog (RFC 9727) — machine-discoverable pointer to the REST API surface.
+// application/linkset+json (NOT application/json, so the last_updated middleware
+// leaves it untouched). See agent-ready plan v5 §3.
+app.get("/.well-known/api-catalog", (c) =>
+	c.body(
+		JSON.stringify({
+			linkset: [
+				{
+					anchor: "https://toolidx.dev/v1",
+					"service-desc": [{ href: "https://toolidx.dev/openapi.json", type: "application/json" }],
+					"service-doc": [{ href: "https://toolidx.dev/docs", type: "text/html" }],
+					status: [{ href: "https://toolidx.dev/v1/status", type: "application/json" }],
+				},
+			],
+		}),
+		200,
+		{
+			"Content-Type": 'application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"',
+			"Cache-Control": "public, max-age=3600",
+		}
+	)
+);
+
+// Agent Skills Discovery (Cloudflare RFC v0.2.0). The index is in CLEAN_JSON_PATHS
+// so the last_updated middleware does not pollute its strict schema; the digest is
+// computed at runtime from the exact SKILL.md bytes served below. Plan v5 §6.
+app.get("/.well-known/agent-skills/index.json", async (c) =>
+	c.json(await buildAgentSkillsIndex())
+);
+
+app.get("/.well-known/agent-skills/search-mcp-servers/SKILL.md", () =>
+	new Response(SEARCH_SKILL_MD, {
+		headers: {
+			"Content-Type": "text/markdown; charset=utf-8",
+			"Cache-Control": "public, max-age=3600",
+		},
+	})
 );
 
 const openapi = fromHono(app, {
