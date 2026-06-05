@@ -1,0 +1,22 @@
+-- Migration 0015: drop evals.score + evals.verdict
+-- Spec: outputs/2026-05-15-claude-toolidx-multi-agent-review-surface-plan-v11.md §3.6
+--
+-- The Sanity Panel emits NO score and NO verdict at any pass (verified live
+-- 2026-05-15 against agenticwatch-jobs). Option 1 stores no fabricated quality
+-- number. These columns were added speculatively in 0003; never populated
+-- (SELECT COUNT(*) FROM evals = 0 pre-feature; the v11 bridge/ingest write
+-- neither). Neither column is in any index, constraint, trigger, or generated
+-- column: 0013's unique index is (server_id, agent, lens, pass) and
+-- idx_evals_server_id is (server_id) only. ALTER TABLE ... DROP COLUMN is
+-- therefore valid SQLite >= 3.35 DDL (D1 qualifies): it rewrites each row to
+-- the narrower layout (NOT metadata-only), but does not invoke the full
+-- 12-step table rebuild and preserves row count + both indexes.
+--
+-- Deploy ordering (v11 §3.0 invariant B): apply ONLY after the new code is
+-- live. All readers of evals.score/verdict (src/index.ts, serverEvals.ts,
+-- sanityIngest.ts, sanityBridge.ts, composite.ts, src/pages/serverDetail.ts,
+-- the deleted rollup) must already be deployed in rewritten form, else the
+-- live Worker errors on a column that no longer exists. Not reversible without
+-- a new migration (accepted trade, v11 §9).
+ALTER TABLE evals DROP COLUMN score;
+ALTER TABLE evals DROP COLUMN verdict;

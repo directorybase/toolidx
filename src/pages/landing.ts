@@ -1,4 +1,30 @@
-export function renderLanding(serverCount: number, lastUpdated: string): string {
+type RecentServer = { id: string; name: string; description: string };
+type CategorySummary = { slug: string; displayName: string; tagline: string; count: number };
+
+// HTML-escape for attribute/text contexts. Mirrors serverDetail.ts esc().
+function escHtml(s: string | null | undefined): string {
+	if (s == null) return "";
+	return String(s).replace(/[&<>"']/g, ch => (
+		{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]!
+	));
+}
+function truncate(s: string, n: number): string {
+	if (s.length <= n) return s;
+	return s.slice(0, n - 1).trimEnd() + "…";
+}
+// JSON-LD script-body safety. Mirrors serverDetail.ts safeJsonLd().
+function safeJsonLd(obj: unknown): string {
+	return JSON.stringify(obj)
+		.replace(/</g, "\\u003c")
+		.replace(/-->/g, "--\\u003e");
+}
+
+export function renderLanding(
+	serverCount: number,
+	lastUpdated: string,
+	recentServers: RecentServer[] = [],
+	categories: CategorySummary[] = [],
+): string {
 	const formatted = lastUpdated
 		? new Date(lastUpdated).toLocaleString("en-US", {
 				month: "short", day: "numeric", year: "numeric",
@@ -8,6 +34,53 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
 		: "—";
 
 	const count = serverCount.toLocaleString("en-US");
+
+	const recentSection = recentServers.length > 0
+		? `<section class="recent">
+    <h2>Recently verified</h2>
+    <ul class="recent-list">
+      ${recentServers.map(s => `<li>
+        <a href="/server/${encodeURIComponent(s.id)}">
+          <span class="recent-name">${escHtml(s.name)}</span>
+          <span class="recent-desc">${escHtml(truncate((s.description ?? "").trim(), 110))}</span>
+        </a>
+      </li>`).join("\n      ")}
+    </ul>
+  </section>`
+		: "";
+
+	// ItemList JSON-LD for the Recently verified section. Eligible for carousel
+	// rich results. Only emit when we have items to list — empty ItemList is
+	// noise to crawlers.
+	const itemListLd = recentServers.length > 0
+		? safeJsonLd({
+			"@context": "https://schema.org",
+			"@type": "ItemList",
+			name: "Recently verified MCP servers",
+			itemListOrder: "https://schema.org/ItemListOrderDescending",
+			numberOfItems: recentServers.length,
+			itemListElement: recentServers.map((s, i) => ({
+				"@type": "ListItem",
+				position: i + 1,
+				url: `https://toolidx.dev/server/${encodeURIComponent(s.id)}`,
+				name: s.name,
+			})),
+		})
+		: "";
+
+	const categorySection = categories.length > 0
+		? `<section class="categories">
+    <h2>Browse by category</h2>
+    <ul class="category-grid">
+      ${categories.map(c => `<li>
+        <a href="/category/${encodeURIComponent(c.slug)}">
+          <span class="category-name">${escHtml(c.displayName)}</span>
+          <span class="category-count">${c.count.toLocaleString("en-US")}</span>
+        </a>
+      </li>`).join("\n      ")}
+    </ul>
+  </section>`
+		: "";
 
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -31,6 +104,7 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
   <meta name="twitter:description" content="Machine-readable verification and status for MCP servers and AI tools.">
   <meta name="twitter:image" content="https://toolidx.dev/og.png">
   <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://toolidx.dev/#website","url":"https://toolidx.dev/","name":"toolidx","description":"Independent MCP server directory and verification service","publisher":{"@id":"https://toolidx.dev/#org"}},{"@type":"Organization","@id":"https://toolidx.dev/#org","name":"toolidx","url":"https://toolidx.dev/","logo":"https://toolidx.dev/favicon.svg","sameAs":["https://github.com/directorybase/toolidx","https://directorybase.org"]}]}</script>
+  ${itemListLd ? `<script type="application/ld+json">${itemListLd}</script>` : ""}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -247,6 +321,112 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
       line-height: 1.5;
     }
 
+    /* ── Recently verified ── */
+    .recent {
+      width: 100%;
+      max-width: 880px;
+      margin: 72px auto 0;
+      text-align: left;
+    }
+
+    .recent h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .recent-list {
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .recent-list li { background: var(--surface); }
+
+    .recent-list a {
+      display: block;
+      padding: 14px 18px;
+      text-decoration: none;
+      color: var(--text);
+      transition: background 0.15s;
+    }
+
+    .recent-list a:hover { background: #222; }
+
+    .recent-name {
+      display: block;
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--green-lt);
+      letter-spacing: -0.01em;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    .recent-desc {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    /* ── Browse by category ── */
+    .categories {
+      width: 100%;
+      max-width: 880px;
+      margin: 56px auto 0;
+      text-align: left;
+    }
+    .categories h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .category-grid {
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .category-grid li { background: var(--surface); }
+    .category-grid a {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      text-decoration: none;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    .category-grid a:hover { background: #222; }
+    .category-name { color: var(--text); }
+    .category-count {
+      color: var(--green-lt);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
     /* ── Footer ── */
     footer {
       padding: 24px 40px;
@@ -276,6 +456,10 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
       .stats { flex-direction: column; gap: 0; }
       .stat + .stat { border-left: none; border-top: 1px solid var(--border); }
       .values { flex-direction: column; }
+      .recent { margin-top: 56px; }
+      .recent-list { grid-template-columns: 1fr; }
+      .categories { margin-top: 40px; }
+      .category-grid { grid-template-columns: 1fr 1fr; }
       footer { flex-direction: column; gap: 16px; text-align: center; }
     }
   </style>
@@ -340,6 +524,9 @@ export function renderLanding(serverCount: number, lastUpdated: string): string 
       <div class="value-desc">Multi-model evaluation scores agents can read and act on.</div>
     </div>
   </div>
+
+  ${categorySection}
+  ${recentSection}
 </main>
 
 <footer>
